@@ -4,19 +4,27 @@ Progressive Web App, die aus einem Foto ein Mosaik-Plakat aus **echten LEGO-Teil
 
 ## Funktionen
 
-1. **Entwurf:** Foto wählen (Datei, Drag & Drop oder Einfügen), Ausschnitt verschieben und zoomen, Format wählen (in 16×16-Grundplatten, bis 128×128 Noppen). Dazu Steintyp, Helligkeit, Kontrast, Sättigung und Dithering sowie die erlaubten LEGO-Farben, einzeln oder als Vorauswahl (Graustufen, Sepia, Porträt …).
+1. **Entwurf:** Foto wählen (Datei, Drag & Drop oder Einfügen), Ausschnitt verschieben und zoomen, Format wählen: Papierformat A4–A0 hoch oder quer (1 Noppe = 8 mm, z. B. A3 = 37 × 52 Noppen), Raster aus 16er-Abschnitten oder frei in Noppen (8–160). Dazu Steintyp, Helligkeit, Kontrast, Sättigung und Dithering sowie die erlaubten LEGO-Farben, einzeln oder als Vorauswahl (Graustufen, Sepia, Porträt …).
    Die Farben werden in CIELAB mit **CIEDE2000** zugeordnet, auf Wunsch mit Floyd-Steinberg-Dithering.
 2. **Bearbeiten:** Steine selbst setzen mit Pinsel, Füllen, Pipette und Verschieben, Rückgängig/Wiederholen, Zoom und 16er-Raster. Zur Wahl stehen alle 41 LEGO-Farben.
    Tastenkürzel: `B` Pinsel, `F` Füllen, `I` Pipette, `Strg+Z`/`Strg+Y`, Leertaste + Ziehen zum Verschieben, `Strg` + Mausrad zum Zoomen.
-3. **Bestellliste:** Stückzahlen je Farbe mit LEGO-Farb-ID und BrickLink-Farb-ID, wahlweise mit Reserve und Grundplatten.
+3. **Bestellliste:** Stückzahlen je Farbe mit LEGO-Farb-ID und BrickLink-Farb-ID, wahlweise mit Reserve und den Platten für den Unterbau.
    Export als **CSV** und als **BrickLink Wanted List (XML)**. Drucken ist ebenfalls möglich.
-4. **Anleitung:** Deckblatt mit Übersicht und Farblegende, danach eine Seite pro 16×16-Abschnitt mit nummeriertem Raster und Teileliste. Über den Druckdialog lässt sie sich als PDF speichern.
+4. **Anleitung:** Deckblatt mit Übersicht und Farblegende, je ein Plan für die beiden Lagen des Unterbaus, danach eine Seite pro 16×16-Abschnitt mit nummeriertem Raster und Teileliste. Über den Druckdialog lässt sie sich als PDF speichern.
 
 Das Projekt wird automatisch im Browser gespeichert (IndexedDB). Über **Projekt → speichern/öffnen** lässt es sich als `.json` sichern, inklusive Foto. Die App funktioniert nach dem ersten Aufruf offline und kann installiert werden.
 
 ## Teile & Farben
 
-- Steintypen: Platte rund 1×1 (BL 4073), Fliese rund 1×1 (BL 98138), Platte 1×1 (BL 3024), Fliese 1×1 (BL 3070b). Grundplatte: Platte 16×16 (BL 91405).
+- Steintypen: Platte rund 1×1 (BL 4073), Fliese rund 1×1 (BL 98138), Platte 1×1 (BL 3024), Fliese 1×1 (BL 3070b). Unterbau: automatisch geplant aus Standard-Platten (1×1 bis 16×16, siehe `js/substructure.js`).
+
+## Unterbau
+
+Da A-Formate keine Vielfachen von 16 Noppen sind, plant die App einen Unterbau aus zwei Lagen echter LEGO-Platten:
+
+- **Lage 2 (oben)** trägt die Mosaiksteine, **Lage 1 (unten)** verbindet die Platten der oberen Lage.
+- Jede Lage wird in Bänder gleicher Plattenhöhe zerlegt, waagrecht oder senkrecht, je nachdem, was weniger Platten braucht. Jedes Band wird dann mit möglichst wenigen Platten gefüllt (dynamische Programmierung).
+- Die untere Lage meidet Fugen der oberen Lage. Bei allen A-Formaten liegt keine Fuge über einer anderen, und es entsteht keine durchgehende Knickkante.
 - Farben: 41 deckende LEGO-Farben in `js/colors.js`, jeweils mit offiziellem LEGO-Namen und LEGO-ID sowie BrickLink-Name und BrickLink-ID. Transparente, Perlmutt- und Metallicfarben sind bewusst nicht dabei.
 - **Hinweis:** Nicht jedes Teil gibt es in jeder Farbe. Vor der Bestellung die Verfügbarkeit prüfen, etwa auf BrickLink oder bei LEGO Pick a Brick, und notfalls im Editor eine andere Farbe setzen.
 
@@ -36,6 +44,7 @@ Der Service Worker braucht HTTPS oder `localhost`. Zum Veröffentlichen genügt 
 | `js/colors.js`, `js/parts.js` | LEGO-Farben und -Teile |
 | `js/mosaic.js` | Bildverarbeitung, Farbabstand, Dithering, Füllen (DOM-frei, getestet) |
 | `js/editor.js`, `js/render.js` | Editor und Darstellung der Noppen |
+| `js/substructure.js` | Unterbau-Planung aus LEGO-Platten (DOM-frei, getestet) |
 | `js/orderlist.js` | Bestellliste, CSV, BrickLink-XML |
 | `js/instructions.js` | Bauanleitung |
 | `js/app.js` | Oberfläche und Zustand |

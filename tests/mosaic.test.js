@@ -73,19 +73,37 @@ test('Bestellliste, BrickLink-XML und CSV', () => {
   assert.equal(list.items.length, 2);
   assert.equal(list.items[0].needed, 412);
   assert.equal(list.items[0].qty, 412 + 42);
-  assert.equal(list.base.qty, 2);
+  // 32×16: oben 2× 16×16, unten versetzt 8×16 + 16×16 + 8×16
+  assert.equal(list.totalPlates, 5);
+  assert.deepEqual(list.base.map(b => [b.part.key, b.qty]), [['16x16', 3], ['8x16', 2]]);
   const xml = orderListToBrickLinkXml(list);
   assert.match(xml, /<ITEMID>4073<\/ITEMID>\s*<COLOR>1<\/COLOR>\s*<MINQTY>454<\/MINQTY>/);
-  assert.match(xml, /<ITEMID>91405<\/ITEMID>\s*<COLOR>11<\/COLOR>\s*<MINQTY>2<\/MINQTY>/);
+  assert.match(xml, /<ITEMID>91405<\/ITEMID>\s*<COLOR>11<\/COLOR>\s*<MINQTY>3<\/MINQTY>/);
   const csv = orderListToCsv(list);
-  assert.equal(csv.trim().split('\r\n').length, 4);
+  assert.equal(csv.trim().split('\r\n').length, 1 + 2 + 2);
+  assert.equal(buildOrderList({ cols: 32, rows: 16, grid, part: 'plate', includeBase: false }).base.length, 0);
 });
 
-test('Anleitung: eine Seite pro Abschnitt + Deckblatt', () => {
+test('BrickLink-XML fasst gleiches Teil in gleicher Farbe zusammen', () => {
+  const black = LEGO_COLORS.findIndex(c => c.legoId === 26);
+  // 9×9 schwarz, Steintyp Platte 1×1, Unterbau schwarz → 3024 kommt in beiden Listen vor
+  const grid = new Uint8Array(9 * 9).fill(black);
+  const list = buildOrderList({ cols: 9, rows: 9, grid, part: 'plate', baseColorId: 26 });
+  const xml = orderListToBrickLinkXml(list);
+  assert.equal((xml.match(/<ITEMID>3024<\/ITEMID>/g) || []).length, 1);
+  const inBase = list.base.find(b => b.part.blId === '3024')?.qty || 0;
+  assert.match(xml, new RegExp(`<ITEMID>3024</ITEMID>\\s*<COLOR>11</COLOR>\\s*<MINQTY>${81 + inBase}</MINQTY>`));
+});
+
+test('Anleitung: Deckblatt + 2 Unterbau-Seiten + eine Seite pro Abschnitt', () => {
   const grid = new Uint8Array(48 * 32).map((_, i) => i % 3);
   const legend = buildLegend(grid);
   assert.equal(legend.entries.length, 3);
   const html = buildInstructionsHtml({ cols: 48, rows: 32, grid, part: 'tile' }, 'Test <x>');
-  assert.equal((html.match(/class="page /g) || []).length, 1 + 6);
+  assert.equal((html.match(/class="page /g) || []).length, 1 + 2 + 6);
+  // A4 hoch: 26 × 37 → 2 × 3 Abschnitte, Randabschnitte kleiner
+  const a4 = buildInstructionsHtml({ cols: 26, rows: 37, grid: new Uint8Array(26 * 37), part: 'plate' });
+  assert.equal((a4.match(/class="page section-page/g) || []).length, 6);
+  assert.ok(a4.includes('Noppen 17–26 (horizontal), 33–37 (vertikal)'));
   assert.ok(html.includes('Test &lt;x&gt;'));
 });

@@ -62,22 +62,26 @@
             <legend>Größe &amp; Steine</legend>
             <label class="field"><span>Format</span>
               <select id="size-preset">
-                <option value="3x3">48 × 48 Noppen (38 × 38 cm)</option>
-                <option value="4x3">64 × 48 Noppen (51 × 38 cm), quer</option>
-                <option value="3x4">48 × 64 Noppen (38 × 51 cm), hoch</option>
-                <option value="4x4">64 × 64 Noppen (51 × 51 cm)</option>
-                <option value="5x4">80 × 64 Noppen (64 × 51 cm), quer</option>
-                <option value="4x5">64 × 80 Noppen (51 × 64 cm), hoch</option>
-                <option value="6x4">96 × 64 Noppen (77 × 51 cm), quer</option>
-                <option value="4x6">64 × 96 Noppen (51 × 77 cm), hoch</option>
-                <option value="6x6">96 × 96 Noppen (77 × 77 cm)</option>
-                <option value="custom">Eigenes Format…</option>
+                <optgroup id="paper-formats" label="Papierformat (1 Noppe = 8 mm)"></optgroup>
+                <optgroup label="Raster aus 16er-Abschnitten">
+                  <option value="3x3">48 × 48 Noppen (38 × 38 cm)</option>
+                  <option value="4x3">64 × 48 Noppen (51 × 38 cm), quer</option>
+                  <option value="3x4">48 × 64 Noppen (38 × 51 cm), hoch</option>
+                  <option value="4x4">64 × 64 Noppen (51 × 51 cm)</option>
+                  <option value="6x6">96 × 96 Noppen (77 × 77 cm)</option>
+                </optgroup>
+                <option value="custom">Eigenes Format (Noppen)…</option>
               </select>
             </label>
-            <div id="custom-size" class="row" hidden>
-              <label class="field"><span>Breite (Platten à 16)</span><input id="size-w" type="number" min="1" max="8" value="3"></label>
-              <label class="field"><span>Höhe (Platten à 16)</span><input id="size-h" type="number" min="1" max="8" value="3"></label>
+            <div id="orient-row" class="row">
+              <label class="check"><input type="radio" name="orient" value="portrait" checked> Hochformat</label>
+              <label class="check"><input type="radio" name="orient" value="landscape"> Querformat</label>
             </div>
+            <div id="custom-size" class="row" hidden>
+              <label class="field"><span>Breite (Noppen)</span><input id="size-w" type="number" min="8" max="160" value="37"></label>
+              <label class="field"><span>Höhe (Noppen)</span><input id="size-h" type="number" min="8" max="160" value="52"></label>
+            </div>
+            <p class="hint">Der Unterbau aus LEGO-Platten wird automatisch passend zur Größe geplant.</p>
             <label class="field"><span>Steintyp</span><select id="part-select"></select></label>
           </fieldset>
 
@@ -157,8 +161,8 @@
               <option value="10">+10 %</option>
             </select>
           </label>
-          <label class="check"><input id="chk-base" type="checkbox" checked> Grundplatten 16×16 mitbestellen</label>
-          <label class="field"><span>Farbe Grundplatten</span><select id="base-color"></select></label>
+          <label class="check"><input id="chk-base" type="checkbox" checked> Unterbau (LEGO-Platten) mitbestellen</label>
+          <label class="field"><span>Farbe Unterbau</span><select id="base-color"></select></label>
         </div>
         <div class="row wrap">
           <button id="btn-csv" class="btn">CSV herunterladen</button>

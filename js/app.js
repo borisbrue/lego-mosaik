@@ -1,5 +1,6 @@
 import { LEGO_COLORS, PALETTE_PRESETS } from './colors.js';
-import { STUD_PARTS, STUD_MM, BASE_PART } from './parts.js';
+import { STUD_PARTS, STUD_MM, SECTION, PAPER_FORMATS, paperStuds } from './parts.js';
+import { planSubstructure } from './substructure.js';
 import { boxDownsample, adjustPixels, preparePalette, quantize, countColors } from './mosaic.js';
 import { renderMosaic, drawSectionLines } from './render.js';
 import { Editor } from './editor.js';
@@ -16,7 +17,7 @@ function defaultProject() {
   return {
     version: 1,
     title: 'Mein LEGO-Mosaik',
-    sizePreset: '3x3', sw: 3, sh: 3,
+    sizePreset: 'A3', orientation: 'portrait',
     part: 'plate-round',
     crop: { zoom: 1, cx: 0.5, cy: 0.5 },
     adjust: { brightness: 0, contrast: 0, saturation: 0 },
@@ -25,7 +26,7 @@ function defaultProject() {
     enabled: PALETTE_PRESETS.all.ids.slice(),
     edited: false,
     sparePercent: 5, includeBase: true, baseColorId: 26,
-    cols: 48, rows: 48, grid: null, // grid: Uint8Array mit Indizes in LEGO_COLORS
+    cols: 37, rows: 52, grid: null, // grid: Uint8Array mit Indizes in LEGO_COLORS
   };
 }
 
@@ -60,6 +61,9 @@ function deserialize(data) {
   const p = { ...defaultProject(), ...data };
   p.crop = { ...defaultProject().crop, ...data.crop };
   p.adjust = { ...defaultProject().adjust, ...data.adjust };
+  // Ältere Projekte: unbekannte Formatvorgabe → eigenes Format mit den gespeicherten Maßen
+  if (!sizeOptionExists(p.sizePreset)) p.sizePreset = 'custom';
+  delete p.sw; delete p.sh;
   if (Array.isArray(data.grid) && data.grid.length === p.cols * p.rows) {
     p.grid = Uint8Array.from(data.grid, id => indexByLegoId.get(id) ?? 0);
   } else { p.grid = null; p.edited = false; }
@@ -129,11 +133,11 @@ function drawCrop() {
   ctx.fill('evenodd');
   ctx.strokeStyle = '#f2cd37'; ctx.lineWidth = 2;
   ctx.strokeRect(r.x * s, r.y * s, r.w * s, r.h * s);
-  // Abschnitts-Linien
+  // Abschnitts-Linien (alle 16 Noppen)
   ctx.strokeStyle = 'rgba(242,205,55,.6)'; ctx.lineWidth = 1;
   ctx.beginPath();
-  for (let i = 1; i < project.sw; i++) { const x = (r.x + (r.w * i) / project.sw) * s; ctx.moveTo(x, r.y * s); ctx.lineTo(x, (r.y + r.h) * s); }
-  for (let j = 1; j < project.sh; j++) { const y = (r.y + (r.h * j) / project.sh) * s; ctx.moveTo(r.x * s, y); ctx.lineTo((r.x + r.w) * s, y); }
+  for (let i = SECTION; i < project.cols; i += SECTION) { const x = (r.x + (r.w * i) / project.cols) * s; ctx.moveTo(x, r.y * s); ctx.lineTo(x, (r.y + r.h) * s); }
+  for (let j = SECTION; j < project.rows; j += SECTION) { const y = (r.y + (r.h * j) / project.rows) * s; ctx.moveTo(r.x * s, y); ctx.lineTo((r.x + r.w) * s, y); }
   ctx.stroke();
 }
 
@@ -191,15 +195,36 @@ function updateDesignView() {
   renderMosaic(ctx, project, cell, STUD_PARTS[project.part].shape);
   drawSectionLines(ctx, project.cols, project.rows, cell);
   const used = countColors(project.grid, LEGO_COLORS.length).filter(Boolean).length;
+  const plates = planSubstructure(project.cols, project.rows).total;
   $('#design-stats').textContent =
     `${project.cols} × ${project.rows} Noppen · ${(project.cols * STUD_MM / 10).toFixed(1)} × ${(project.rows * STUD_MM / 10).toFixed(1)} cm · ` +
-    `${project.cols * project.rows} Teile · ${used} Farben · ${project.sw * project.sh} Grundplatten`;
+    `${project.cols * project.rows} Teile · ${used} Farben · Unterbau aus ${plates} Platten`;
 }
 
-function setSize(sw, sh) {
-  project.sw = sw; project.sh = sh;
-  project.cols = sw * BASE_PART.size; project.rows = sh * BASE_PART.size;
+function setSize(cols, rows) {
+  project.cols = cols; project.rows = rows;
   sampled = null;
+}
+
+const clampStuds = v => Math.min(160, Math.max(8, Math.round(+v) || 8));
+const sizeOptionExists = v => /^[\w-]+$/.test(v) && !!document.querySelector(`#size-preset option[value="${v}"]`);
+
+/** Maße aus Formatvorgabe, Ausrichtung und eigenen Eingaben übernehmen. */
+function applySizeFromControls() {
+  const v = project.sizePreset;
+  if (v in PAPER_FORMATS) { const { cols, rows } = paperStuds(v, project.orientation); setSize(cols, rows); }
+  else if (v === 'custom') setSize(clampStuds($('#size-w').value), clampStuds($('#size-h').value));
+  else { const [w, h] = v.split('x').map(Number); setSize(w * SECTION, h * SECTION); }
+  syncSizeControls();
+}
+
+function syncSizeControls() {
+  const v = project.sizePreset;
+  $('#size-preset').value = v;
+  $('#orient-row').hidden = !(v in PAPER_FORMATS);
+  $$('input[name="orient"]').forEach(r => { r.checked = r.value === project.orientation; });
+  $('#custom-size').hidden = v !== 'custom';
+  $('#size-w').value = project.cols; $('#size-h').value = project.rows;
 }
 
 function renderPaletteChips() {
@@ -230,9 +255,7 @@ function renderPaletteChips() {
 
 function syncControls() {
   $('#project-title').value = project.title;
-  $('#size-preset').value = project.sizePreset;
-  $('#custom-size').hidden = project.sizePreset !== 'custom';
-  $('#size-w').value = project.sw; $('#size-h').value = project.sh;
+  syncSizeControls();
   $('#part-select').value = project.part;
   for (const k of ['brightness', 'contrast', 'saturation']) {
     $(`#adj-${k}`).value = project.adjust[k]; $(`#out-${k}`).textContent = project.adjust[k];
@@ -250,6 +273,10 @@ function initDesign() {
   // Steintypen
   $('#part-select').innerHTML = Object.entries(STUD_PARTS)
     .map(([k, p]) => `<option value="${k}">${p.label} (BrickLink ${p.blId})</option>`).join('');
+  $('#paper-formats').innerHTML = Object.keys(PAPER_FORMATS).map(f => {
+    const { cols, rows } = paperStuds(f);
+    return `<option value="${f}">${f} · ${cols} × ${rows} Noppen (${(cols * STUD_MM / 10).toFixed(1).replace('.', ',')} × ${(rows * STUD_MM / 10).toFixed(1).replace('.', ',')} cm)</option>`;
+  }).join('');
   $('#palette-preset').innerHTML = Object.entries(PALETTE_PRESETS)
     .map(([k, p]) => `<option value="${k}">${p.label}</option>`).join('') + '<option value="custom">Eigene Auswahl</option>';
 
@@ -284,18 +311,14 @@ function initDesign() {
 
   $('#size-preset').addEventListener('change', e => {
     project.sizePreset = e.target.value;
-    $('#custom-size').hidden = project.sizePreset !== 'custom';
-    if (project.sizePreset !== 'custom') {
-      const [w, h] = project.sizePreset.split('x').map(Number);
-      setSize(w, h);
-    } else setSize(+$('#size-w').value, +$('#size-h').value);
-    $('#size-w').value = project.sw; $('#size-h').value = project.sh;
-    regenerate();
+    applySizeFromControls(); regenerate();
   });
+  $$('input[name="orient"]').forEach(r => r.addEventListener('change', () => {
+    project.orientation = r.value;
+    applySizeFromControls(); regenerate();
+  }));
   for (const id of ['#size-w', '#size-h']) $(id).addEventListener('change', () => {
-    const w = Math.min(8, Math.max(1, +$('#size-w').value || 1)), h = Math.min(8, Math.max(1, +$('#size-h').value || 1));
-    $('#size-w').value = w; $('#size-h').value = h;
-    setSize(w, h); regenerate();
+    applySizeFromControls(); regenerate();
   });
   $('#part-select').addEventListener('change', e => { project.part = e.target.value; updateDesignView(); save(); });
   for (const k of ['brightness', 'contrast', 'saturation']) {
@@ -332,7 +355,7 @@ function initEditor() {
     onPick: ci => { selectColor(ci); setTool('brush'); },
     onCursor: cell => {
       if (!cell) { $('#cursor-pos').textContent = ''; return; }
-      const sec = Math.floor(cell.y / 16) * project.sw + Math.floor(cell.x / 16) + 1;
+      const sec = Math.floor(cell.y / SECTION) * Math.ceil(project.cols / SECTION) + Math.floor(cell.x / SECTION) + 1;
       $('#cursor-pos').textContent = `Spalte ${cell.x + 1}, Zeile ${cell.y + 1} · Abschnitt ${sec} · ${LEGO_COLORS[project.grid[cell.i]].de}`;
     },
     onHistory: () => { $('#btn-undo').disabled = !editor.undoStack.length; $('#btn-redo').disabled = !editor.redoStack.length; },
@@ -415,8 +438,8 @@ function renderOrder() {
       <td class="num">${it.needed}</td><td class="num">${it.spare}</td><td class="num"><strong>${it.qty}</strong></td></tr>`;
   el.innerHTML = `<h1 class="print-title">${esc(project.title)} – Bestellliste</h1><div class="table-wrap"><table>
     <thead><tr><th></th><th>Teil</th><th>Farbe</th><th>LEGO-Farbe (ID)</th><th>BrickLink-Farbe (ID)</th><th class="num">Benötigt</th><th class="num">Reserve</th><th class="num">Bestellen</th></tr></thead>
-    <tbody>${list.items.map(row).join('')}${list.base ? row(list.base) : ''}</tbody>
-    <tfoot><tr><td colspan="5">${list.items.length} Farben · ${project.cols}×${project.rows} Noppen</td><td class="num">${project.cols * project.rows}</td><td></td><td class="num">${list.totalStuds}${list.base ? ` + ${list.base.qty} Platten` : ''}</td></tr></tfoot>
+    <tbody>${list.items.map(row).join('')}${list.base.length ? `<tr class="group"><th colspan="8">Unterbau (2 Lagen)</th></tr>${list.base.map(row).join('')}` : ''}</tbody>
+    <tfoot><tr><td colspan="5">${list.items.length} Farben · ${project.cols}×${project.rows} Noppen</td><td class="num">${project.cols * project.rows}</td><td></td><td class="num">${list.totalStuds}${list.base.length ? ` + ${list.totalPlates} Platten` : ''}</td></tr></tfoot>
   </table></div>`;
 }
 

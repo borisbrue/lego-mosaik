@@ -140,6 +140,9 @@ td .part-name, td small { white-space: nowrap; }
 .section-page h2 { margin: 0; } .section-page h2 small { color: var(--muted); font-weight: 400; }
 .locator svg { width: 32mm; height: auto; border: 1px solid #ccc; }
 .section-grid svg { width: 100%; height: auto; display: block; }
+tr.group th { text-align: left; padding-top: .9rem; font-size: .85rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.layer-page h2 { margin: 0 0 .3rem; }
+.layer-grid svg { width: 100%; height: auto; max-height: 210mm; display: block; margin: 0 auto; }
 .section-parts { list-style: none; padding: 0; margin: 1rem 0 0; display: flex; flex-wrap: wrap; gap: .5rem 1rem; font-size: .9rem; }
 .section-parts li { display: flex; align-items: center; gap: .3rem; }
 
@@ -153,6 +156,7 @@ td .part-name, td small { white-space: nowrap; }
   table { font-size: 9pt; }
   th, td { padding: .25rem .4rem; }
   .cover-preview svg { max-height: 95mm; }
+  .layer-grid svg { max-height: 225mm; }
   .app-header, .no-print, .toast, .order-head, .info, .tab-panel:not(.printing) { display: none !important; }
   main { padding: 0; }
   .tab-panel.printing { display: block !important; max-width: none; }

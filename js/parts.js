@@ -6,7 +6,16 @@ export const STUD_PARTS = {
   'tile':        { label: 'Fliese 1×1',      blId: '3070b', designId: '3070',  shape: 'square-flat' },
 };
 
-// Grundplatte je 16×16-Abschnitt
-export const BASE_PART = { label: 'Platte 16×16', blId: '91405', designId: '91405', size: 16 };
+// Abschnittsgröße der Bauanleitung (eine Seite je 16×16 Noppen)
+export const SECTION = 16;
 
 export const STUD_MM = 8; // Rastermaß eines Noppen in mm
+
+// Papierformate in mm (kurze × lange Seite). Noppen = ganze Noppen, die hineinpassen.
+export const PAPER_FORMATS = {
+  A4: [210, 297], A3: [297, 420], A2: [420, 594], A1: [594, 841], A0: [841, 1189],
+};
+export function paperStuds(format, orientation = 'portrait') {
+  const [s, l] = PAPER_FORMATS[format].map(mm => Math.floor(mm / STUD_MM));
+  return orientation === 'landscape' ? { cols: l, rows: s } : { cols: s, rows: l };
+}
