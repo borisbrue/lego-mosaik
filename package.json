@@ -1,0 +1,11 @@
+{
+  "name": "lego-mosaik",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "PWA: Fotos in LEGO-Mosaik-Plakate umwandeln – mit Editor, Bestellliste und Bauanleitung",
+  "scripts": {
+    "start": "python3 -m http.server 8080",
+    "test": "node --test tests/*.test.js"
+  }
+}
