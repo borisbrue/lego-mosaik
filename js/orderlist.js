@@ -1,25 +1,22 @@
 import { LEGO_COLORS } from './colors.js';
-import { STUD_PARTS } from './parts.js';
 import { planSubstructure } from './substructure.js';
-import { countColors } from './mosaic.js';
+import { buildElements, countParts } from './pieces.js';
 
 /**
  * Erstellt die Bestellliste.
- * @param project {cols, rows, grid (Indizes in LEGO_COLORS), part, sparePercent, baseColorId, includeBase}
- * @returns {{items, base: Array, totalStuds, totalPlates}} – base = Platten des Unterbaus (beide Lagen)
+ * @param project {cols, rows, grid, shapes?, overlay?, overlayColor?, longTiles?, part, sparePercent, baseColorId, includeBase}
+ * @returns {{items, base: Array, totalStuds, totalPlates}} – items = Mosaikteile, base = Platten des Unterbaus (beide Lagen)
  */
 export function buildOrderList(project) {
-  const { cols, rows, grid, part, sparePercent = 0, baseColorId = 26, includeBase = true } = project;
-  const p = STUD_PARTS[part];
-  const counts = countColors(grid, LEGO_COLORS.length);
-  const items = [];
-  counts.forEach((n, i) => {
-    if (!n) return;
-    const c = LEGO_COLORS[i];
+  const { cols, rows, sparePercent = 0, baseColorId = 26, includeBase = true } = project;
+  const items = countParts(buildElements(project)).map(({ part, colorIndex, count: n }) => {
     const spare = sparePercent > 0 ? Math.max(1, Math.ceil((n * sparePercent) / 100)) : 0;
-    items.push({ colorIndex: i, color: c, part: p, needed: n, spare, qty: n + spare });
+    return { colorIndex, color: LEGO_COLORS[colorIndex], part, needed: n, spare, qty: n + spare };
   });
-  items.sort((a, b) => b.needed - a.needed);
+  // nach Teil gruppiert (häufigstes Teil zuerst), innerhalb nach Menge
+  const partTotal = new Map();
+  for (const it of items) partTotal.set(it.part.blId, (partTotal.get(it.part.blId) || 0) + it.needed);
+  items.sort((a, b) => partTotal.get(b.part.blId) - partTotal.get(a.part.blId) || a.part.blId.localeCompare(b.part.blId) || b.needed - a.needed);
   let base = [];
   if (includeBase) {
     const color = LEGO_COLORS.find(c => c.legoId === baseColorId) || LEGO_COLORS[1];

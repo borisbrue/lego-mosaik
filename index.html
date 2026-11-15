@@ -82,7 +82,16 @@
               <label class="field"><span>Höhe (Noppen)</span><input id="size-h" type="number" min="8" max="160" value="52"></label>
             </div>
             <p class="hint">Der Unterbau aus LEGO-Platten wird automatisch passend zur Größe geplant.</p>
-            <label class="field"><span>Steintyp</span><select id="part-select"></select></label>
+          </fieldset>
+
+          <fieldset id="design-pieces">
+            <legend>Steine &amp; Konturen</legend>
+            <label class="field"><span>Steintyp Flächen</span><select id="part-select"></select></label>
+            <label class="field"><span>Steintyp Konturen</span><select id="edge-select"></select></label>
+            <label class="field range" id="edge-sens-wrap"><span>Konturen erkennen <output id="out-edge">50</output></span><input id="edge-sens" type="range" min="0" max="100" value="50"></label>
+            <label class="check"><input id="chk-long" type="checkbox" checked> Eckige Fliesen zu 1×2 bis 1×4 zusammenfassen</label>
+            <label class="field range"><span>Halbe Noppen <output id="out-relief">0</output></span><input id="adj-relief" type="range" min="0" max="100" value="0"></label>
+            <p class="hint">Halbe Noppen: Viertel- und Halbkreis-Fliesen auf einer 1×1-Platte glätten schräge und runde Kanten. Sie stehen eine Plattenhöhe höher (Relief).</p>
           </fieldset>
 
           <fieldset id="design-adjust">
@@ -91,6 +100,8 @@
             <label class="field range"><span>Kontrast <output id="out-contrast">0</output></span><input id="adj-contrast" type="range" min="-60" max="60" value="0"></label>
             <label class="field range"><span>Sättigung <output id="out-saturation">0</output></span><input id="adj-saturation" type="range" min="-100" max="100" value="0"></label>
             <label class="field range"><span>Dithering <output id="out-dither">0</output></span><input id="adj-dither" type="range" min="0" max="100" value="0"></label>
+            <label class="field range"><span>Schärfen <output id="out-sharpen">30</output></span><input id="adj-sharpen" type="range" min="0" max="100" value="30"></label>
+            <label class="check"><input id="chk-despeckle" type="checkbox"> Einzelne Ausreißer-Steine entfernen</label>
           </fieldset>
 
           <fieldset id="design-palette">
@@ -120,6 +131,8 @@
           <button class="btn tool" data-tool="brush" aria-pressed="true" title="Pinsel (B)">✏️ Setzen</button>
           <button class="btn tool" data-tool="fill" aria-pressed="false" title="Fläche füllen (F)">🪣 Füllen</button>
           <button class="btn tool" data-tool="pick" aria-pressed="false" title="Farbe aufnehmen (I)">💧 Pipette</button>
+          <button class="btn tool" data-tool="shape" aria-pressed="false" title="Steinform setzen (S)">🔶 Form</button>
+          <button class="btn tool" data-tool="half" aria-pressed="false" title="Halbe Noppe setzen (H), erneut klicken dreht (R)">🌓 Halbe Noppe</button>
           <button class="btn tool" data-tool="pan" aria-pressed="false" title="Verschieben (Leertaste)">✋ Verschieben</button>
         </div>
         <div class="tool-group">
@@ -131,6 +144,17 @@
           <span id="zoom-label" class="zoom-label">100 %</span>
           <button id="btn-zoom-in" class="btn" title="Vergrößern">+</button>
           <label class="check"><input id="chk-grid" type="checkbox" checked> Raster</label>
+        </div>
+        <div class="tool-group" id="shape-opts" hidden>
+          <select id="shape-select" aria-label="Steinform"></select>
+        </div>
+        <div class="tool-group" id="half-opts" hidden>
+          <select id="half-kind" aria-label="Art der halben Noppe">
+            <option value="0">Viertelkreis</option>
+            <option value="1">Halbkreis</option>
+            <option value="-1">Entfernen</option>
+          </select>
+          <button id="btn-rotate" class="btn" title="Drehen (R)">⟳ <svg id="half-preview" viewBox="0 0 1 1" width="16" height="16"><rect width="1" height="1" fill="#ccc"/><path fill="currentColor"/></svg></button>
         </div>
         <div class="current-color"><span id="current-swatch" class="swatch"></span><span id="current-name"></span></div>
         <span id="cursor-pos" class="cursor-pos"></span>

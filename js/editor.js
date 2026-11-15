@@ -1,16 +1,17 @@
-import { LEGO_COLORS } from './colors.js';
-import { STUD_PARTS } from './parts.js';
-import { drawCell, renderMosaic, drawSectionLines } from './render.js';
+import { overlayCode, overlayKind, overlayRot } from './parts.js';
+import { drawCellOf, renderMosaic, drawSectionLines } from './render.js';
 import { floodFill } from './mosaic.js';
 
 const ZOOMS = [4, 6, 8, 10, 12, 16, 20, 24, 32, 40];
 const MAX_CANVAS = 4096;
 
 export class Editor {
-  constructor({ canvas, viewport, onChange, onPick, onCursor, onHistory }) {
+  constructor({ canvas, viewport, onChange, onPick, onCursor, onHistory, onHalfRot }) {
     this.canvas = canvas; this.viewport = viewport; this.ctx = canvas.getContext('2d');
-    this.onChange = onChange; this.onPick = onPick; this.onCursor = onCursor; this.onHistory = onHistory;
+    this.onChange = onChange; this.onPick = onPick; this.onCursor = onCursor; this.onHistory = onHistory; this.onHalfRot = onHalfRot;
     this.project = null; this.color = 1; this.tool = 'brush'; this.showGrid = true;
+    this.shape = 3;                      // Index in SHAPE_KEYS für das Werkzeug „Steinform“
+    this.halfKind = 0; this.halfRot = 0; // Werkzeug „Halbe Noppe“: 0 Viertelkreis, 1 Halbkreis, -1 entfernen
     this.zoomIdx = 5; this.undoStack = []; this.redoStack = []; this.stroke = null; this.panStart = null;
     this.spaceDown = false;
     canvas.addEventListener('pointerdown', e => this.down(e));
@@ -44,6 +45,8 @@ export class Editor {
 
   setTool(tool) { this.tool = tool; this.viewport.classList.toggle('pan', tool === 'pan'); }
   setColor(ci) { this.color = ci; }
+  setShape(si) { this.shape = si; }
+  setHalf(kind, rot = this.halfRot) { this.halfKind = kind; this.halfRot = rot & 3; }
   setGrid(on) { this.showGrid = on; this.redrawAll(); }
 
   zoomBy(dir, e) {
@@ -64,17 +67,14 @@ export class Editor {
     if (!p) return;
     const c = this.cell;
     this.canvas.width = p.cols * c; this.canvas.height = p.rows * c;
-    renderMosaic(this.ctx, p, c, STUD_PARTS[p.part].shape);
+    renderMosaic(this.ctx, p, c);
     if (this.showGrid) drawSectionLines(this.ctx, p.cols, p.rows, c);
     this.onChange?.('zoom');
   }
 
   drawCells(indices) {
-    const p = this.project, c = this.cell, shape = STUD_PARTS[p.part].shape;
-    for (const i of indices) {
-      const x = i % p.cols, y = (i / p.cols) | 0;
-      drawCell(this.ctx, x * c, y * c, c, LEGO_COLORS[p.grid[i]].hex, shape);
-    }
+    const p = this.project, c = this.cell;
+    for (const i of indices) drawCellOf(this.ctx, p, i, c);
     if (this.showGrid) drawSectionLines(this.ctx, p.cols, p.rows, c);
   }
 
@@ -99,10 +99,10 @@ export class Editor {
     if (this.tool === 'fill') {
       const before = this.project.grid[cell.i];
       const changed = floodFill(this.project.grid, this.project.cols, this.project.rows, cell.i, this.color);
-      if (changed.length) this.commit(changed.map(i => ({ i, from: before, to: this.color })));
-      this.drawCells(changed);
+      if (changed.length) this.commit(changed.map(i => ({ i, f: 'grid', from: before, to: this.color })));
       return;
     }
+    if (this.tool === 'half') { this.placeHalf(cell); return; }
     this.stroke = { changes: new Map(), last: cell };
     this.paint(cell);
   }
@@ -133,11 +133,30 @@ export class Editor {
   }
 
   paint(cell) {
-    const g = this.project.grid;
-    if (g[cell.i] === this.color) return;
-    if (!this.stroke.changes.has(cell.i)) this.stroke.changes.set(cell.i, { i: cell.i, from: g[cell.i], to: this.color });
-    g[cell.i] = this.color;
+    const f = this.tool === 'shape' ? 'shapes' : 'grid', to = f === 'shapes' ? this.shape : this.color;
+    const g = this.project[f];
+    if (g[cell.i] === to) return;
+    if (!this.stroke.changes.has(cell.i)) this.stroke.changes.set(cell.i, { i: cell.i, f, from: g[cell.i], to });
+    g[cell.i] = to;
     this.drawCells([cell.i]);
+  }
+
+  /** Halbe Noppe setzen; erneuter Klick auf dieselbe Art dreht sie um 90°. */
+  placeHalf(cell) {
+    const p = this.project, i = cell.i, cur = p.overlay[i];
+    let code = 0, color = p.overlayColor[i];
+    if (this.halfKind >= 0) {
+      const rot = cur && overlayKind(cur) === this.halfKind ? (overlayRot(cur) + 1) & 3 : this.halfRot;
+      code = overlayCode(this.halfKind, rot); color = this.color;
+      this.halfRot = rot;
+    }
+    const changes = [];
+    if (cur !== code) changes.push({ i, f: 'overlay', from: cur, to: code });
+    if (code && color !== p.overlayColor[i]) changes.push({ i, f: 'overlayColor', from: p.overlayColor[i], to: color });
+    if (!changes.length) return;
+    for (const ch of changes) p[ch.f][i] = ch.to;
+    this.commit(changes);
+    this.onHalfRot?.(this.halfRot);
   }
 
   up() {
@@ -150,6 +169,7 @@ export class Editor {
   }
 
   commit(changes) {
+    this.redrawAll();
     this.undoStack.push(changes);
     if (this.undoStack.length > 200) this.undoStack.shift();
     this.redoStack = [];
@@ -162,9 +182,9 @@ export class Editor {
   apply(src, dst, key) {
     const changes = src.pop();
     if (!changes) return;
-    for (const ch of changes) this.project.grid[ch.i] = ch[key];
+    for (const ch of changes) this.project[ch.f || 'grid'][ch.i] = ch[key];
     dst.push(changes);
-    this.drawCells(changes.map(c => c.i));
+    this.redrawAll();
     this.onHistory?.();
     this.onChange?.('edit');
   }

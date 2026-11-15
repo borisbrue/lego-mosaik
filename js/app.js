@@ -1,7 +1,8 @@
 import { LEGO_COLORS, PALETTE_PRESETS } from './colors.js';
-import { STUD_PARTS, STUD_MM, SECTION, PAPER_FORMATS, paperStuds } from './parts.js';
+import { STUD_PARTS, STUD_MM, SECTION, PAPER_FORMATS, paperStuds, SHAPE_KEYS, SHAPE_INDEX, SHAPE_PLATE, overlayCode } from './parts.js';
+import { autoShapes, computeOverlays, despeckle, buildElements, overlayPath } from './pieces.js';
 import { planSubstructure } from './substructure.js';
-import { boxDownsample, adjustPixels, preparePalette, quantize, countColors } from './mosaic.js';
+import { boxDownsample, dominantDownsample, unsharpMask, adjustPixels, preparePalette, quantize, countColors } from './mosaic.js';
 import { renderMosaic, drawSectionLines } from './render.js';
 import { Editor } from './editor.js';
 import { buildOrderList, orderListToCsv, orderListToBrickLinkXml } from './orderlist.js';
@@ -18,7 +19,13 @@ function defaultProject() {
     version: 1,
     title: 'Mein LEGO-Mosaik',
     sizePreset: 'A3', orientation: 'portrait',
-    part: 'plate-round',
+    part: 'plate-round',      // Steintyp der Flächen
+    edgePart: 'tile',         // Steintyp der Konturen ('same' = wie Fläche)
+    edgeSensitivity: 50,      // 0..100
+    longTiles: true,          // eckige Fliesen zu 1×2–1×4 zusammenfassen
+    relief: 0,                // halbe Noppen: 0 = aus … 100 = viele
+    sharpen: 30,              // 0..100
+    despeckle: false,
     crop: { zoom: 1, cx: 0.5, cy: 0.5 },
     adjust: { brightness: 0, contrast: 0, saturation: 0 },
     dither: 0,
@@ -26,7 +33,11 @@ function defaultProject() {
     enabled: PALETTE_PRESETS.all.ids.slice(),
     edited: false,
     sparePercent: 5, includeBase: true, baseColorId: 26,
-    cols: 37, rows: 52, grid: null, // grid: Uint8Array mit Indizes in LEGO_COLORS
+    cols: 37, rows: 52,
+    grid: null,          // Uint8Array: Farbindex (LEGO_COLORS) je Zelle
+    shapes: null,        // Uint8Array: Index in SHAPE_KEYS je Zelle
+    overlay: null,       // Uint8Array: halbe Noppe je Zelle (0 = keine, siehe overlayCode)
+    overlayColor: null,  // Uint8Array: Farbindex der halben Noppe
   };
 }
 
@@ -54,8 +65,24 @@ const slug = s => (s || 'mosaik').toLowerCase().replace(/[^a-z0-9äöüß]+/gi, 
 const esc = s => String(s).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
 
 // ---------- Speichern / Laden ----------
+const toIds = a => a ? Array.from(a, i => LEGO_COLORS[i].legoId) : null;
+const fromIds = (a, n) => Array.isArray(a) && a.length === n ? Uint8Array.from(a, id => indexByLegoId.get(id) ?? 0) : null;
 function serialize() {
-  return { ...project, grid: project.grid ? Array.from(project.grid, i => LEGO_COLORS[i].legoId) : null };
+  return {
+    ...project, grid: toIds(project.grid), overlayColor: toIds(project.overlayColor),
+    shapes: project.shapes ? Array.from(project.shapes) : null,
+    overlay: project.overlay ? Array.from(project.overlay) : null,
+  };
+}
+
+/** Sorgt dafür, dass Formen- und Overlay-Raster zur Größe passen (ältere Projekte). */
+function ensureLayers(p) {
+  const n = p.cols * p.rows;
+  if (!p.grid) { p.shapes = p.overlay = p.overlayColor = null; return p; }
+  if (!p.shapes || p.shapes.length !== n) p.shapes = new Uint8Array(n).fill(SHAPE_INDEX[p.part] ?? 0);
+  if (!p.overlay || p.overlay.length !== n) p.overlay = new Uint8Array(n);
+  if (!p.overlayColor || p.overlayColor.length !== n) p.overlayColor = new Uint8Array(n);
+  return p;
 }
 function deserialize(data) {
   const p = { ...defaultProject(), ...data };
@@ -64,10 +91,13 @@ function deserialize(data) {
   // Ältere Projekte: unbekannte Formatvorgabe → eigenes Format mit den gespeicherten Maßen
   if (!sizeOptionExists(p.sizePreset)) p.sizePreset = 'custom';
   delete p.sw; delete p.sh;
-  if (Array.isArray(data.grid) && data.grid.length === p.cols * p.rows) {
-    p.grid = Uint8Array.from(data.grid, id => indexByLegoId.get(id) ?? 0);
-  } else { p.grid = null; p.edited = false; }
-  return p;
+  const n = p.cols * p.rows;
+  p.grid = fromIds(data.grid, n);
+  if (!p.grid) p.edited = false;
+  p.overlayColor = fromIds(data.overlayColor, n);
+  p.shapes = Array.isArray(data.shapes) && data.shapes.length === n ? Uint8Array.from(data.shapes) : null;
+  p.overlay = Array.isArray(data.overlay) && data.overlay.length === n ? Uint8Array.from(data.overlay) : null;
+  return ensureLayers(p);
 }
 const save = debounce(() => kvSet('project', serialize()).catch(console.error), 400);
 
@@ -141,18 +171,27 @@ function drawCrop() {
   ctx.stroke();
 }
 
+const SUB = 4; // Teilpixel je Zelle und Richtung für halbe Noppen
+
+/** Liefert gemittelte Zellfarben und feinere Teilpixel (vor Helligkeit usw.). */
 function sampleImage() {
   const r = cropRect();
-  const key = [image.src, project.cols, project.rows, r.x, r.y, r.w, r.h].join('|');
+  const key = [image.src, project.cols, project.rows, r.x, r.y, r.w, r.h, project.sharpen].join('|');
   if (key === sampledKey && sampled) return sampled;
-  const k = Math.max(1, Math.min(8, Math.floor(2048 / Math.max(project.cols, project.rows))));
+  const k = Math.max(SUB, Math.min(8, Math.floor(2048 / Math.max(project.cols, project.rows))));
   const w = project.cols * k, h = project.rows * k;
   const c = document.createElement('canvas'); c.width = w; c.height = h;
   const ctx = c.getContext('2d', { willReadFrequently: true });
   ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
   ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
   ctx.drawImage(image, r.x, r.y, r.w, r.h, 0, 0, w, h);
-  sampled = boxDownsample(ctx.getImageData(0, 0, w, h).data, w, h, project.cols, project.rows);
+  const data = ctx.getImageData(0, 0, w, h).data;
+  const sharp = project.sharpen / 100;
+  unsharpMask(data, w, h, sharp * 1.5, Math.max(1, Math.round(k / 2)));
+  sampled = {
+    cells: dominantDownsample(data, w, h, project.cols, project.rows, sharp),
+    sub: boxDownsample(data, w, h, project.cols * SUB, project.rows * SUB),
+  };
   sampledKey = key;
   return sampled;
 }
@@ -167,10 +206,21 @@ function regenerate() {
   if (!image || project.edited) { updateDesignView(); return; }
   const idx = enabledIndices();
   if (!idx.length) { toast('Mindestens eine Farbe aktivieren.'); return; }
-  const px = adjustPixels(Float32Array.from(sampleImage()), project.adjust);
+  const { cols, rows } = project;
+  const smp = sampleImage();
+  const px = adjustPixels(Float32Array.from(smp.cells), project.adjust);
   const prepared = preparePalette(idx.map(i => LEGO_COLORS[i]));
-  const q = quantize(px, project.cols, project.rows, prepared, { dither: project.dither / 100 });
-  project.grid = Uint8Array.from(q, i => idx[i]);
+  const q = quantize(px, cols, rows, prepared, { dither: project.dither / 100 });
+  const grid = Uint8Array.from(q, i => idx[i]);
+  if (project.despeckle) despeckle(grid, cols, rows);
+  const shapes = autoShapes(grid, cols, rows, { area: project.part, edge: project.edgePart, sensitivity: project.edgeSensitivity }, px);
+  let overlay = new Uint8Array(cols * rows), overlayColor = new Uint8Array(cols * rows);
+  if (project.relief > 0) {
+    const sub = adjustPixels(Float32Array.from(smp.sub), project.adjust);
+    ({ overlay, overlayColor } = computeOverlays(sub, grid, cols, rows, SUB, project.relief));
+    for (let i = 0; i < overlay.length; i++) if (overlay[i]) shapes[i] = SHAPE_PLATE;
+  }
+  Object.assign(project, { grid, shapes, overlay, overlayColor });
   updateDesignView();
   save();
 }
@@ -185,20 +235,23 @@ function updateDesignView() {
   $('#crop-wrap').hidden = !image;
   $('#drop-zone span').textContent = image ? 'Anderes Foto wählen' : 'Foto wählen oder hierher ziehen';
   $('#design-lock').hidden = !project.edited;
-  for (const id of ['#design-settings', '#design-adjust', '#design-palette']) $(id).disabled = project.edited;
+  for (const id of ['#design-settings', '#design-pieces', '#design-adjust', '#design-palette']) $(id).disabled = project.edited;
   $('#crop-zoom').disabled = project.edited;
   if (!has) { $('#design-stats').textContent = ''; return; }
   const c = $('#preview-canvas');
   const cell = Math.max(4, Math.min(14, Math.floor(1100 / Math.max(project.cols, project.rows))));
   c.width = project.cols * cell; c.height = project.rows * cell;
   const ctx = c.getContext('2d');
-  renderMosaic(ctx, project, cell, STUD_PARTS[project.part].shape);
+  renderMosaic(ctx, project, cell);
   drawSectionLines(ctx, project.cols, project.rows, cell);
-  const used = countColors(project.grid, LEGO_COLORS.length).filter(Boolean).length;
+  const els = buildElements(project);
+  const used = new Set(els.map(e => e.colorIndex)).size;
+  const longs = els.filter(e => e.kind === 'long').length, halves = els.filter(e => e.kind === 'overlay').length;
   const plates = planSubstructure(project.cols, project.rows).total;
   $('#design-stats').textContent =
     `${project.cols} × ${project.rows} Noppen · ${(project.cols * STUD_MM / 10).toFixed(1)} × ${(project.rows * STUD_MM / 10).toFixed(1)} cm · ` +
-    `${project.cols * project.rows} Teile · ${used} Farben · Unterbau aus ${plates} Platten`;
+    `${els.length} Teile` + (longs ? ` (davon ${longs} lange Fliesen)` : '') + (halves ? ` · ${halves} halbe Noppen` : '') +
+    ` · ${used} Farben · Unterbau aus ${plates} Platten`;
 }
 
 function setSize(cols, rows) {
@@ -257,6 +310,13 @@ function syncControls() {
   $('#project-title').value = project.title;
   syncSizeControls();
   $('#part-select').value = project.part;
+  $('#edge-select').value = project.edgePart;
+  $('#edge-sens').value = project.edgeSensitivity; $('#out-edge').textContent = project.edgeSensitivity;
+  $('#edge-sens-wrap').hidden = project.edgePart === 'same' || project.edgePart === project.part;
+  $('#chk-long').checked = project.longTiles;
+  $('#adj-relief').value = project.relief; $('#out-relief').textContent = project.relief;
+  $('#adj-sharpen').value = project.sharpen; $('#out-sharpen').textContent = project.sharpen;
+  $('#chk-despeckle').checked = project.despeckle;
   for (const k of ['brightness', 'contrast', 'saturation']) {
     $(`#adj-${k}`).value = project.adjust[k]; $(`#out-${k}`).textContent = project.adjust[k];
   }
@@ -271,8 +331,10 @@ function syncControls() {
 
 function initDesign() {
   // Steintypen
-  $('#part-select').innerHTML = Object.entries(STUD_PARTS)
+  const partOptions = Object.entries(STUD_PARTS)
     .map(([k, p]) => `<option value="${k}">${p.label} (BrickLink ${p.blId})</option>`).join('');
+  $('#part-select').innerHTML = partOptions;
+  $('#edge-select').innerHTML = '<option value="same">wie Flächen (nicht mischen)</option>' + partOptions;
   $('#paper-formats').innerHTML = Object.keys(PAPER_FORMATS).map(f => {
     const { cols, rows } = paperStuds(f);
     return `<option value="${f}">${f} · ${cols} × ${rows} Noppen (${(cols * STUD_MM / 10).toFixed(1).replace('.', ',')} × ${(rows * STUD_MM / 10).toFixed(1).replace('.', ',')} cm)</option>`;
@@ -320,7 +382,14 @@ function initDesign() {
   for (const id of ['#size-w', '#size-h']) $(id).addEventListener('change', () => {
     applySizeFromControls(); regenerate();
   });
-  $('#part-select').addEventListener('change', e => { project.part = e.target.value; updateDesignView(); save(); });
+  const setAndRegen = (key, val) => { project[key] = val; syncControls(); regenerateSoon(); };
+  $('#part-select').addEventListener('change', e => setAndRegen('part', e.target.value));
+  $('#edge-select').addEventListener('change', e => setAndRegen('edgePart', e.target.value));
+  $('#edge-sens').addEventListener('input', e => { project.edgeSensitivity = +e.target.value; $('#out-edge').textContent = e.target.value; regenerateSoon(); });
+  $('#chk-long').addEventListener('change', e => { project.longTiles = e.target.checked; updateDesignView(); save(); });
+  $('#adj-relief').addEventListener('input', e => { project.relief = +e.target.value; $('#out-relief').textContent = e.target.value; regenerateSoon(); });
+  $('#adj-sharpen').addEventListener('input', e => { project.sharpen = +e.target.value; $('#out-sharpen').textContent = e.target.value; regenerateSoon(); });
+  $('#chk-despeckle').addEventListener('change', e => setAndRegen('despeckle', e.target.checked));
   for (const k of ['brightness', 'contrast', 'saturation']) {
     $(`#adj-${k}`).addEventListener('input', e => {
       project.adjust[k] = +e.target.value; $(`#out-${k}`).textContent = e.target.value; regenerateSoon();
@@ -359,7 +428,14 @@ function initEditor() {
       $('#cursor-pos').textContent = `Spalte ${cell.x + 1}, Zeile ${cell.y + 1} · Abschnitt ${sec} · ${LEGO_COLORS[project.grid[cell.i]].de}`;
     },
     onHistory: () => { $('#btn-undo').disabled = !editor.undoStack.length; $('#btn-redo').disabled = !editor.redoStack.length; },
+    onHalfRot: () => updateHalfPreview(),
   });
+  $('#shape-select').innerHTML = SHAPE_KEYS.map((k, i) => `<option value="${i}">${STUD_PARTS[k].label}</option>`).join('');
+  $('#shape-select').value = editor.shape;
+  $('#shape-select').addEventListener('change', e => editor.setShape(+e.target.value));
+  $('#half-kind').addEventListener('change', e => { editor.setHalf(+e.target.value); updateHalfPreview(); });
+  $('#btn-rotate').addEventListener('click', () => { editor.setHalf(editor.halfKind, editor.halfRot + 1); updateHalfPreview(); });
+  updateHalfPreview();
   editor.onHistory();
   $('#editor-canvas').addEventListener('contextmenu', e => e.preventDefault());
   $$('.tool').forEach(b => b.addEventListener('click', () => setTool(b.dataset.tool)));
@@ -376,6 +452,9 @@ function initEditor() {
     else if (!mod && e.key === 'b') setTool('brush');
     else if (!mod && e.key === 'f') setTool('fill');
     else if (!mod && e.key === 'i') setTool('pick');
+    else if (!mod && e.key === 's') setTool('shape');
+    else if (!mod && e.key === 'h') setTool('half');
+    else if (!mod && e.key === 'r') { editor.setHalf(editor.halfKind, editor.halfRot + 1); updateHalfPreview(); }
     else if (!mod && (e.key === '+' || e.key === '=')) editor.zoomBy(1);
     else if (!mod && e.key === '-') editor.zoomBy(-1);
   });
@@ -389,6 +468,14 @@ const debouncedDesign = debounce(updateDesignView, 300);
 function setTool(t) {
   editor.setTool(t);
   $$('.tool').forEach(b => b.setAttribute('aria-pressed', b.dataset.tool === t));
+  $('#shape-opts').hidden = t !== 'shape';
+  $('#half-opts').hidden = t !== 'half';
+}
+
+function updateHalfPreview() {
+  const kind = editor.halfKind;
+  $('#half-preview path').setAttribute('d', kind >= 0 ? overlayPath(overlayCode(kind, editor.halfRot)) : '');
+  $('#btn-rotate').disabled = kind < 0;
 }
 
 function colorButton(ci, count) {
@@ -415,7 +502,8 @@ function renderUsedColors() {
   const wrap = $('#used-colors');
   wrap.innerHTML = '';
   if (!project.grid) return;
-  countColors(project.grid, LEGO_COLORS.length)
+  const all = project.overlay ? [...project.grid, ...project.overlayColor.filter((_, i) => project.overlay[i])] : project.grid;
+  countColors(all, LEGO_COLORS.length)
     .map((n, i) => [i, n]).filter(([, n]) => n).sort((a, b) => b[1] - a[1])
     .forEach(([i, n]) => wrap.appendChild(colorButton(i, n)));
 }

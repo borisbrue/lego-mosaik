@@ -141,6 +141,9 @@ td .part-name, td small { white-space: nowrap; }
 .locator svg { width: 32mm; height: auto; border: 1px solid #ccc; }
 .section-grid svg { width: 100%; height: auto; display: block; }
 tr.group th { text-align: left; padding-top: .9rem; font-size: .85rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.part-legend { list-style: none; padding: 0; margin: 0 0 1rem; display: flex; flex-wrap: wrap; gap: .4rem 1.2rem; font-size: .85rem; }
+.part-legend li { display: flex; align-items: center; gap: .35rem; }
+.part-icon { height: 1.4em; flex: none; }
 .layer-page h2 { margin: 0 0 .3rem; }
 .layer-grid svg { width: 100%; height: auto; max-height: 210mm; display: block; margin: 0 auto; }
 .section-parts { list-style: none; padding: 0; margin: 1rem 0 0; display: flex; flex-wrap: wrap; gap: .5rem 1rem; font-size: .9rem; }

@@ -82,6 +82,85 @@ export function boxDownsample(data, w, h, cols, rows) {
   return out;
 }
 
+/**
+ * Unscharf maskieren auf RGBA-Daten (in place): Bild + amount · (Bild − Weichzeichnung).
+ * Weichzeichnung = zweifacher Box-Blur mit Radius r (≈ Gauß).
+ */
+export function unsharpMask(data, w, h, amount, r) {
+  if (amount <= 0 || r < 1) return data;
+  const n = w * h;
+  const ch = new Float32Array(n), tmp = new Float32Array(n);
+  const blurH = (src, dst) => {
+    for (let y = 0; y < h; y++) {
+      let s = 0; const row = y * w;
+      for (let x = -r; x <= r; x++) s += src[row + Math.min(w - 1, Math.max(0, x))];
+      for (let x = 0; x < w; x++) {
+        dst[row + x] = s / (2 * r + 1);
+        s += src[row + Math.min(w - 1, x + r + 1)] - src[row + Math.max(0, x - r)];
+      }
+    }
+  };
+  const blurV = (src, dst) => {
+    for (let x = 0; x < w; x++) {
+      let s = 0;
+      for (let y = -r; y <= r; y++) s += src[Math.min(h - 1, Math.max(0, y)) * w + x];
+      for (let y = 0; y < h; y++) {
+        dst[y * w + x] = s / (2 * r + 1);
+        s += src[Math.min(h - 1, y + r + 1) * w + x] - src[Math.max(0, y - r) * w + x];
+      }
+    }
+  };
+  for (let c = 0; c < 3; c++) {
+    for (let i = 0; i < n; i++) ch[i] = data[i * 4 + c];
+    const orig = Float32Array.from(ch);
+    blurH(ch, tmp); blurV(tmp, ch); blurH(ch, tmp); blurV(tmp, ch);
+    for (let i = 0; i < n; i++) data[i * 4 + c] = clamp(orig[i] + amount * (orig[i] - ch[i]));
+  }
+  return data;
+}
+
+/**
+ * Wie boxDownsample, schiebt den Zellwert aber Richtung der größeren von zwei Farbgruppen
+ * (2-Means je Zelle). Dadurch kippt eine Kantenzelle zur dominanten Seite statt zu einem
+ * Mischton zu verschwimmen. dominance 0..1 (0 = reiner Mittelwert).
+ */
+export function dominantDownsample(data, w, h, cols, rows, dominance) {
+  const out = boxDownsample(data, w, h, cols, rows);
+  if (dominance <= 0) return out;
+  const px = [];
+  for (let r = 0; r < rows; r++) {
+    const y0 = Math.floor((r * h) / rows), y1 = Math.max(y0 + 1, Math.floor(((r + 1) * h) / rows));
+    for (let c = 0; c < cols; c++) {
+      const x0 = Math.floor((c * w) / cols), x1 = Math.max(x0 + 1, Math.floor(((c + 1) * w) / cols));
+      px.length = 0;
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+        const i = (y * w + x) * 4, a = data[i + 3] / 255;
+        px.push([data[i] * a + 255 * (1 - a), data[i + 1] * a + 255 * (1 - a), data[i + 2] * a + 255 * (1 - a)]);
+      }
+      if (px.length < 4) continue;
+      // Startzentren: hellstes und dunkelstes Pixel
+      let lo = px[0], hi = px[0];
+      for (const p of px) { const s = p[0] + p[1] + p[2]; if (s < lo[0] + lo[1] + lo[2]) lo = p; if (s > hi[0] + hi[1] + hi[2]) hi = p; }
+      let c0 = lo.slice(), c1 = hi.slice(), n0 = 0, n1 = 0;
+      for (let it = 0; it < 4; it++) {
+        const s0 = [0, 0, 0], s1 = [0, 0, 0]; n0 = 0; n1 = 0;
+        for (const p of px) {
+          const d0 = (p[0] - c0[0]) ** 2 + (p[1] - c0[1]) ** 2 + (p[2] - c0[2]) ** 2;
+          const d1 = (p[0] - c1[0]) ** 2 + (p[1] - c1[1]) ** 2 + (p[2] - c1[2]) ** 2;
+          if (d0 <= d1) { s0[0] += p[0]; s0[1] += p[1]; s0[2] += p[2]; n0++; } else { s1[0] += p[0]; s1[1] += p[1]; s1[2] += p[2]; n1++; }
+        }
+        if (n0) c0 = s0.map(v => v / n0);
+        if (n1) c1 = s1.map(v => v / n1);
+      }
+      // Nur bei klar getrennten Gruppen eingreifen
+      if (!n0 || !n1 || (c0[0] - c1[0]) ** 2 + (c0[1] - c1[1]) ** 2 + (c0[2] - c1[2]) ** 2 < 900) continue;
+      const dom = n0 >= n1 ? c0 : c1, o = (r * cols + c) * 3;
+      for (let k = 0; k < 3; k++) out[o + k] += dominance * (dom[k] - out[o + k]);
+    }
+  }
+  return out;
+}
+
 /** Helligkeit (-100..100), Kontrast (-100..100), Sättigung (-100..100) anwenden (in place). */
 export function adjustPixels(px, { brightness = 0, contrast = 0, saturation = 0 } = {}) {
   const b = brightness * 2.55;
