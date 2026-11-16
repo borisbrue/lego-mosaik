@@ -113,8 +113,13 @@
           <fieldset id="design-palette">
             <legend>LEGO-Farben</legend>
             <label class="field"><span>Auswahl</span><select id="palette-preset"></select></label>
+            <label class="field"><span>Anzahl Farben</span><select id="color-count">
+              <option value="0">alle erlaubten</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option>
+              <option value="6">6</option><option value="8">8</option><option value="10">10</option><option value="12">12</option><option value="16">16</option>
+            </select></label>
+            <label class="check" id="pin-wrap"><input id="chk-pin" type="checkbox"> Antippen hält eine Farbe fest 📌</label>
             <div id="palette-chips" class="chips" aria-label="Farben ein/aus"></div>
-            <p class="hint"><span id="palette-count"></span> Farben aktiv. Antippen schaltet eine Farbe ein oder aus.</p>
+            <p class="hint"><span id="palette-count"></span> Farben aktiv. Antippen schaltet eine Farbe ein oder aus. Bei begrenzter Anzahl wählt die App die passendsten Farben für das Bild; nicht gewählte erscheinen blass, festgehaltene 📌 sind immer dabei.</p>
           </fieldset>
         </aside>
 
@@ -125,6 +130,26 @@
           </div>
           <canvas id="preview-canvas" hidden></canvas>
           <p id="design-stats" class="stats"></p>
+          <section id="regions-panel" class="regions" hidden>
+            <div class="regions-head">
+              <h3>Bereiche</h3>
+              <label class="field range"><span>Feinheit <output id="out-detail">50</output></span><input id="region-detail" type="range" min="0" max="100" value="50"></label>
+              <button id="btn-regions-reset" class="btn" type="button">Alle zurücksetzen</button>
+            </div>
+            <p class="hint">Tippe in die Vorschau oder wähle einen Bereich, um ihn auszublenden, anzuheben oder umzufärben.</p>
+            <div id="region-list" class="region-list"></div>
+            <div id="region-actions" class="region-actions" hidden>
+              <span id="region-info" class="region-info"></span>
+              <label class="check"><input id="chk-region-similar" type="checkbox"> alle ähnlichen</label>
+              <button id="btn-region-hide" class="btn" type="button" aria-pressed="false">🙈 Ausblenden</button>
+              <label class="field"><span>Ebene</span><select id="region-level">
+                <option value="">automatisch</option><option value="0">0 (flach)</option><option value="1">+1</option><option value="2">+2</option><option value="3">+3</option>
+              </select></label>
+              <label class="field"><span>Farbe</span><select id="region-color"></select></label>
+              <button id="btn-region-clear" class="btn" type="button">Zurücksetzen</button>
+              <button id="btn-region-close" class="btn" type="button" title="Auswahl aufheben">✕</button>
+            </div>
+          </section>
           <div class="stage-actions"><button id="btn-to-edit" class="btn primary" disabled>Weiter zum Bearbeiten →</button></div>
         </div>
       </div>

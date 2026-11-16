@@ -2,8 +2,9 @@ import { LEGO_COLORS, PALETTE_PRESETS } from './colors.js';
 import { STUD_PARTS, STUD_MM, SECTION, PAPER_FORMATS, paperStuds, SHAPE_KEYS, SHAPE_INDEX, SHAPE_PLATE, overlayCode } from './parts.js';
 import { autoShapes, computeOverlays, simplify, buildElements, overlayPath } from './pieces.js';
 import { autoDepth, planRisers } from './layers.js';
+import { segment, regionAt, regionAnchor, regionGroup, applyRegionOps } from './regions.js';
 import { planSubstructure } from './substructure.js';
-import { boxDownsample, dominantDownsample, unsharpMask, smoothCells, adjustPixels, preparePalette, quantize, countColors } from './mosaic.js';
+import { boxDownsample, dominantDownsample, unsharpMask, smoothCells, reducePalette, adjustPixels, preparePalette, quantize, countColors } from './mosaic.js';
 import { renderMosaic, drawSectionLines } from './render.js';
 import { Editor } from './editor.js';
 import { buildOrderList, orderListToCsv, orderListToBrickLinkXml } from './orderlist.js';
@@ -26,6 +27,10 @@ function defaultProject() {
     longTiles: true,          // eckige Fliesen zu 1×2–1×4 zusammenfassen
     relief: 0,                // halbe Noppen: 0 = aus … 100 = viele
     sharpen: 30,              // 0..100
+    colorCount: 0,            // 0 = alle erlaubten Farben, sonst die n passendsten
+    pinned: [],               // LEGO-Farb-IDs, die bei begrenzter Anzahl immer dabei sind
+    regionDetail: 50,         // Feinheit der Bereichserkennung
+    regionOps: [],            // [{x, y, hide?, colorId?, level?}] – Ankerpunkt normiert 0..1
     depth: 0,                 // 0..100: Ebenen automatisch vorschlagen
     riserColorId: 26,         // Farbe der Sockelplatten unter erhöhten Bereichen ('match' = wie Oberfläche)
     simplify: 30,             // 0..100: Farbinseln verschmelzen, Flächen glätten
@@ -50,6 +55,9 @@ let image = null;      // HTMLImageElement / ImageBitmap
 let imageBlob = null;
 let sampled = null;    // gemittelte RGB-Werte (vor Anpassungen)
 let sampledKey = '';
+let segmentation = null;   // Bereiche des aktuellen Entwurfs (nicht gespeichert)
+let chosenColors = null;   // Farbindizes nach „Anzahl Farben“
+let selectedRegion = null; // {x, y} normiert
 
 // ---------- Hilfsfunktionen ----------
 function toast(msg) {
@@ -213,26 +221,39 @@ function enabledIndices() {
 function regenerate() {
   drawCrop();
   if (!image || project.edited) { updateDesignView(); return; }
-  const idx = enabledIndices();
+  let idx = enabledIndices();
   if (!idx.length) { toast('Mindestens eine Farbe aktivieren.'); return; }
   const { cols, rows } = project;
   const smp = sampleImage();
   const px = adjustPixels(Float32Array.from(smp.cells), project.adjust);
   const simp = project.simplify / 100;
   smoothCells(px, cols, rows, simp);
+  if (project.colorCount > 0) {
+    const pinned = new Set(idx.flatMap((ci, k) => (project.pinned.includes(LEGO_COLORS[ci].legoId) ? [k] : [])));
+    idx = reducePalette(px, preparePalette(idx.map(i => LEGO_COLORS[i])), project.colorCount, pinned).map(k => idx[k]);
+  }
+  chosenColors = new Set(idx);
   const prepared = preparePalette(idx.map(i => LEGO_COLORS[i]));
   const q = quantize(px, cols, rows, prepared, { dither: project.dither / 100 });
   const grid = Uint8Array.from(q, i => idx[i]);
   if (simp > 0) simplify(grid, cols, rows, 1 + Math.round(simp ** 1.5 * cols * rows / 300));
+  segmentation = segment(px, cols, rows, project.regionDetail);
+  const ops = project.regionOps.map(o => ({ ...o, color: o.colorId != null ? indexByLegoId.get(o.colorId) : null }));
+  const { hidden, levels } = applyRegionOps(grid, cols, rows, segmentation, ops);
   const shapes = autoShapes(grid, cols, rows, { area: project.part, edge: project.edgePart, sensitivity: project.edgeSensitivity }, px);
   let overlay = new Uint8Array(cols * rows), overlayColor = new Uint8Array(cols * rows);
   if (project.relief > 0) {
     const sub = adjustPixels(Float32Array.from(smp.sub), project.adjust);
     ({ overlay, overlayColor } = computeOverlays(sub, grid, cols, rows, SUB, project.relief));
-    for (let i = 0; i < overlay.length; i++) if (overlay[i]) shapes[i] = SHAPE_PLATE;
+    for (let i = 0; i < overlay.length; i++) {
+      if (hidden[i]) overlay[i] = 0;
+      if (overlay[i]) shapes[i] = SHAPE_PLATE;
+    }
   }
   const height = autoDepth(grid, cols, rows, project.depth, px);
+  for (let i = 0; i < height.length; i++) if (levels[i] >= 0) height[i] = levels[i];
   Object.assign(project, { grid, shapes, overlay, overlayColor, height });
+  renderPaletteChips();
   updateDesignView();
   save();
 }
@@ -256,6 +277,8 @@ function updateDesignView() {
   const ctx = c.getContext('2d');
   renderMosaic(ctx, project, cell);
   drawSectionLines(ctx, project.cols, project.rows, cell);
+  drawRegionHighlight(ctx, cell);
+  renderRegionsUI();
   const els = buildElements(project);
   const used = new Set(els.map(e => e.colorIndex)).size;
   const longs = els.filter(e => e.kind === 'long').length, halves = els.filter(e => e.kind === 'overlay').length;
@@ -266,6 +289,143 @@ function updateDesignView() {
     `${els.length} Teile` + (longs ? ` (davon ${longs} lange Fliesen)` : '') + (halves ? ` · ${halves} halbe Noppen` : '') +
     ` · ${used} Farben · Unterbau aus ${plates} Platten` +
     (risers.length ? ` · ${levels} ${levels === 1 ? 'Ebene' : 'Ebenen'} aus ${risers.length} Sockelplatten` : '');
+}
+
+// ---------- Bereiche ----------
+const segReady = () => segmentation && !project.edited && segmentation.label.length === project.cols * project.rows;
+const selectedId = () => (selectedRegion && segReady() ? regionAt(segmentation, project.cols, project.rows, selectedRegion.x, selectedRegion.y) : -1);
+const opIndexFor = id => {
+  const anchor = o => regionAt(segmentation, project.cols, project.rows, o.x, o.y);
+  const k = project.regionOps.findIndex(o => anchor(o) === id);
+  return k >= 0 ? k : project.regionOps.findIndex(o => o.similar && regionGroup(segmentation, anchor(o), true).has(id));
+};
+
+function drawRegionHighlight(ctx, cell) {
+  const sel = selectedId();
+  if (sel < 0) return;
+  const { cols, rows } = project, group = regionGroup(segmentation, sel, selectedRegion.similar);
+  const lab = Int32Array.from(segmentation.label, l => (group.has(l) ? 1 : 0)), id = 1;
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,.5)';
+  for (let i = 0; i < lab.length; i++) if (lab[i] !== id) ctx.fillRect((i % cols) * cell, ((i / cols) | 0) * cell, cell, cell);
+  ctx.strokeStyle = '#ffd400'; ctx.lineWidth = Math.max(2, cell * 0.2); ctx.lineCap = 'round';
+  ctx.beginPath();
+  for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+    if (lab[y * cols + x] !== id) continue;
+    const X = x * cell, Y = y * cell;
+    if (x === 0 || lab[y * cols + x - 1] !== id) { ctx.moveTo(X, Y); ctx.lineTo(X, Y + cell); }
+    if (x === cols - 1 || lab[y * cols + x + 1] !== id) { ctx.moveTo(X + cell, Y); ctx.lineTo(X + cell, Y + cell); }
+    if (y === 0 || lab[(y - 1) * cols + x] !== id) { ctx.moveTo(X, Y); ctx.lineTo(X + cell, Y); }
+    if (y === rows - 1 || lab[(y + 1) * cols + x] !== id) { ctx.moveTo(X, Y + cell); ctx.lineTo(X + cell, Y + cell); }
+  }
+  ctx.stroke(); ctx.restore();
+}
+
+function regionThumb(id, rgb) {
+  const { cols, rows } = project, lab = segmentation.label;
+  const s = Math.max(1, Math.floor(56 / Math.max(cols, rows)));
+  const c = document.createElement('canvas'); c.width = cols * s; c.height = rows * s;
+  const ctx = c.getContext('2d');
+  const light = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2] > 150;
+  ctx.fillStyle = light ? '#4a4f57' : '#d9dce1'; ctx.fillRect(0, 0, c.width, c.height);
+  ctx.fillStyle = `rgb(${rgb.join(',')})`;
+  for (let i = 0; i < lab.length; i++) if (lab[i] === id) ctx.fillRect((i % cols) * s, ((i / cols) | 0) * s, s, s);
+  return c;
+}
+
+function opBadges(op) {
+  if (!op) return '';
+  return (op.hide ? '🙈' : '') + (op.colorId != null && !op.hide ? '🎨' : '') + (op.level != null ? `⛰${op.level}` : '');
+}
+
+function renderRegionsUI() {
+  const panel = $('#regions-panel');
+  panel.hidden = !segReady();
+  if (panel.hidden) return;
+  $('#region-detail').value = project.regionDetail; $('#out-detail').textContent = project.regionDetail;
+  $('#btn-regions-reset').disabled = !project.regionOps.length;
+  const sel = selectedId();
+  // Liste: die größten Bereiche plus alle mit Änderungen
+  const withOps = new Set(project.regionOps.map(o => regionAt(segmentation, project.cols, project.rows, o.x, o.y)));
+  const ids = segmentation.regions.filter(r => r.id < 12 || withOps.has(r.id)).map(r => r.id);
+  if (sel >= 0 && !ids.includes(sel)) ids.push(sel);
+  const list = $('#region-list');
+  list.innerHTML = '';
+  for (const id of ids) {
+    const r = segmentation.regions[id], op = project.regionOps[opIndexFor(id)];
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'region-item'; b.setAttribute('aria-pressed', id === sel);
+    b.title = `Bereich mit ${r.size} Steinen`;
+    b.appendChild(regionThumb(id, r.rgb));
+    const badge = document.createElement('span'); badge.className = 'region-badge'; badge.textContent = opBadges(op) || `${r.size}`;
+    b.appendChild(badge);
+    b.addEventListener('click', () => {
+      selectedRegion = id === sel ? null : regionAnchor(segmentation, project.cols, project.rows, id);
+      adoptOp();
+      updateDesignView();
+    });
+    list.appendChild(b);
+  }
+  // Aktionen für den gewählten Bereich
+  $('#region-actions').hidden = sel < 0;
+  if (sel < 0) return;
+  const op = project.regionOps[opIndexFor(sel)] || {};
+  const group = regionGroup(segmentation, sel, selectedRegion.similar);
+  const stones = [...group].reduce((s, g) => s + segmentation.regions[g].size, 0);
+  $('#region-info').textContent = group.size > 1 ? `${group.size} Bereiche · ${stones} Steine` : `${stones} Steine`;
+  $('#chk-region-similar').checked = !!selectedRegion.similar;
+  $('#btn-region-hide').setAttribute('aria-pressed', !!op.hide);
+  $('#region-level').value = op.level ?? '';
+  const colorOpts = '<option value="">wie berechnet</option>' + project.enabled
+    .map(id => LEGO_COLORS[indexByLegoId.get(id)]).filter(Boolean)
+    .map(c => `<option value="${c.legoId}">${esc(c.de)}</option>`).join('');
+  if ($('#region-color').dataset.opts !== colorOpts) { $('#region-color').innerHTML = colorOpts; $('#region-color').dataset.opts = colorOpts; }
+  $('#region-color').value = op.colorId ?? '';
+  $('#region-color').disabled = !!op.hide;
+}
+
+/** Ändert die Aktion für den gewählten Bereich (legt sie bei Bedarf an, entfernt leere). */
+function updateRegionOp(change) {
+  const id = selectedId();
+  if (id < 0) return;
+  let k = opIndexFor(id);
+  if (k < 0) { project.regionOps.push({ ...selectedRegion }); k = project.regionOps.length - 1; }
+  if (selectedRegion.similar) project.regionOps[k].similar = true; else delete project.regionOps[k].similar;
+  const op = Object.assign(project.regionOps[k], change);
+  for (const key of ['hide', 'colorId', 'level', 'similar']) if (op[key] === null || op[key] === undefined || op[key] === false) delete op[key];
+  if (!('hide' in op) && !('colorId' in op) && !('level' in op)) project.regionOps.splice(k, 1);
+  regenerate();
+}
+
+function initRegions() {
+  $('#preview-canvas').addEventListener('click', e => {
+    if (!segReady()) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    const pt = { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
+    const id = regionAt(segmentation, project.cols, project.rows, pt.x, pt.y);
+    selectedRegion = id === selectedId() ? null : pt;
+    adoptOp();
+    updateDesignView();
+  });
+  $('#region-detail').addEventListener('input', e => { project.regionDetail = +e.target.value; $('#out-detail').textContent = e.target.value; regenerateSoon(); });
+  $('#btn-regions-reset').addEventListener('click', () => { project.regionOps = []; regenerate(); });
+  $('#btn-region-hide').addEventListener('click', () => updateRegionOp({ hide: $('#btn-region-hide').getAttribute('aria-pressed') !== 'true' }));
+  $('#region-level').addEventListener('change', e => updateRegionOp({ level: e.target.value === '' ? null : +e.target.value }));
+  $('#region-color').addEventListener('change', e => updateRegionOp({ colorId: e.target.value === '' ? null : +e.target.value }));
+  $('#btn-region-clear').addEventListener('click', () => updateRegionOp({ hide: null, colorId: null, level: null }));
+  $('#btn-region-close').addEventListener('click', () => { selectedRegion = null; updateDesignView(); });
+  $('#chk-region-similar').addEventListener('change', e => {
+    if (!selectedRegion) return;
+    selectedRegion.similar = e.target.checked;
+    if (opIndexFor(selectedId()) >= 0) updateRegionOp({}); else updateDesignView();
+  });
+}
+
+/** Übernimmt beim Auswählen „alle ähnlichen“ aus einer vorhandenen Aktion. */
+function adoptOp() {
+  if (!selectedRegion) return;
+  const op = project.regionOps[opIndexFor(selectedId())];
+  selectedRegion = op ? { x: op.x, y: op.y, similar: !!op.similar } : { ...selectedRegion, similar: false };
 }
 
 function setSize(cols, rows) {
@@ -305,7 +465,17 @@ function renderPaletteChips() {
     b.title = `${c.de} – LEGO ${c.legoName} (${c.legoId})`;
     b.setAttribute('aria-label', c.de);
     b.setAttribute('aria-pressed', enabled.has(c.legoId));
+    const ci = indexByLegoId.get(c.legoId);
+    if (project.colorCount > 0 && chosenColors && enabled.has(c.legoId) && !chosenColors.has(ci)) b.classList.add('unused');
+    if (project.colorCount > 0 && project.pinned.includes(c.legoId)) { b.classList.add('pinned'); b.textContent = '📌'; }
     b.addEventListener('click', () => {
+      if ($('#chk-pin').checked && project.colorCount > 0) {
+        const pin = !project.pinned.includes(c.legoId);
+        project.pinned = pin ? [...project.pinned, c.legoId] : project.pinned.filter(id => id !== c.legoId);
+        if (pin && !project.enabled.includes(c.legoId)) project.enabled = [...project.enabled, c.legoId];
+        renderPaletteChips(); regenerateSoon();
+        return;
+      }
       const on = b.getAttribute('aria-pressed') !== 'true';
       if (!on && project.enabled.length <= 1) return;
       b.setAttribute('aria-pressed', on);
@@ -318,6 +488,8 @@ function renderPaletteChips() {
     wrap.appendChild(b);
   });
   $('#palette-count').textContent = project.enabled.length;
+  $('#color-count').value = project.colorCount;
+  $('#pin-wrap').hidden = !(project.colorCount > 0);
 }
 
 function syncControls() {
@@ -413,6 +585,7 @@ function initDesign() {
     });
   }
   $('#adj-dither').addEventListener('input', e => { project.dither = +e.target.value; $('#out-dither').textContent = e.target.value; regenerateSoon(); });
+  $('#color-count').addEventListener('change', e => { project.colorCount = +e.target.value; renderPaletteChips(); regenerate(); });
   $('#palette-preset').addEventListener('change', e => {
     const p = PALETTE_PRESETS[e.target.value];
     project.palettePreset = e.target.value;
@@ -654,7 +827,7 @@ function initPwa() {
 
 // ---------- Start ----------
 async function init() {
-  initDesign(); initEditor(); initOrder(); initMenu(); initPwa();
+  initDesign(); initRegions(); initEditor(); initOrder(); initMenu(); initPwa();
   $$('.tabs button').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
   try {
     const saved = await kvGet('project');

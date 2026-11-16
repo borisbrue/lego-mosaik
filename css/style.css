@@ -189,3 +189,22 @@ tr.group th { text-align: left; padding-top: .9rem; font-size: .85rem; text-tran
   .editor-viewport { height: 62vh; }
   .stage { position: static; }
 }
+
+/* Farbmodus */
+.chip-toggle.unused { opacity: .45; outline: 2px dashed rgba(0,0,0,.35); outline-offset: -3px; }
+.chip-toggle.pinned { outline: 3px solid var(--red); outline-offset: 1px; font-size: .7rem; line-height: 1; }
+
+/* Bereiche */
+#preview-canvas { cursor: pointer; }
+.regions { width: 100%; display: grid; gap: .5rem; border-top: 1px solid rgba(0,0,0,.08); padding-top: .75rem; }
+.regions-head { display: flex; flex-wrap: wrap; align-items: end; gap: .75rem; }
+.regions-head h3 { margin: 0; margin-right: auto; }
+.regions-head .field { min-width: 160px; }
+.region-list { display: flex; flex-wrap: wrap; gap: .4rem; }
+.region-item { position: relative; padding: 3px; border: 2px solid transparent; border-radius: 6px; background: #fff; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.2); }
+.region-item canvas { display: block; max-width: 56px; max-height: 56px; }
+.region-item[aria-pressed="true"] { border-color: #ffd400; box-shadow: 0 0 0 2px #333; }
+.region-badge { position: absolute; right: 2px; bottom: 2px; font-size: .65rem; background: rgba(255,255,255,.9); border-radius: 4px; padding: 0 3px; }
+.region-actions { display: flex; flex-wrap: wrap; align-items: end; gap: .5rem; background: #fff8d6; border-radius: 8px; padding: .5rem; }
+.region-info { font-weight: 600; align-self: center; }
+#btn-region-hide[aria-pressed="true"] { background: #333; color: #fff; }

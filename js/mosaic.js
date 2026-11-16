@@ -307,3 +307,75 @@ export function floodFill(grid, cols, rows, start, value) {
   }
   return changed;
 }
+
+/**
+ * Wählt die n LEGO-Farben, mit denen sich das Bild am besten darstellen lässt.
+ * Start mit allen erlaubten Farben; dann wird immer die Farbe entfernt, deren Wegfall den
+ * Fehler am wenigsten erhöht (Fehler = ΔE2000², große Abweichungen zählen stark – so überleben
+ * auch kleine, aber markante Farben wie Augen oder Schrift).
+ * @param px Float32Array RGB je Zelle
+ * @param prepared vorbereitete Palette (preparePalette)
+ * @param pinned Set von Indizes in `prepared`, die bleiben müssen
+ * @returns aufsteigend sortierte Indizes in `prepared`
+ */
+export function reducePalette(px, prepared, n, pinned = new Set()) {
+  const k = prepared.length;
+  if (n <= 0 || n >= k) return prepared.map((_, i) => i);
+  // Gleiche Zellfarben zusammenfassen (Gewicht = Anzahl), sonst wird es bei großen Formaten langsam
+  const groups = new Map();
+  for (let i = 0; i < px.length; i += 3) {
+    const key = (Math.round(px[i] / 4) << 12) | (Math.round(px[i + 1] / 4) << 6) | Math.round(px[i + 2] / 4);
+    const g = groups.get(key);
+    if (g) g.w++; else groups.set(key, { r: px[i], g: px[i + 1], b: px[i + 2], w: 1 });
+  }
+  const G = [...groups.values()], m = G.length;
+  const D = new Float32Array(m * k);
+  G.forEach((g, a) => {
+    const lab = rgbToLab(clamp(g.r), clamp(g.g), clamp(g.b));
+    for (let c = 0; c < k; c++) { const d = deltaE2000(lab, prepared[c].lab); D[a * k + c] = d * d; }
+  });
+  const alive = new Uint8Array(k).fill(1);
+  let count = k;
+  const best = new Int32Array(m), second = new Int32Array(m);
+  const refresh = () => {
+    for (let a = 0; a < m; a++) {
+      let b1 = -1, b2 = -1;
+      for (let c = 0; c < k; c++) {
+        if (!alive[c]) continue;
+        const d = D[a * k + c];
+        if (b1 < 0 || d < D[a * k + b1]) { b2 = b1; b1 = c; } else if (b2 < 0 || d < D[a * k + b2]) b2 = c;
+      }
+      best[a] = b1; second[a] = b2;
+    }
+  };
+  while (count > Math.max(n, pinned.size)) {
+    refresh();
+    const cost = new Float64Array(k);
+    for (let a = 0; a < m; a++) if (second[a] >= 0) cost[best[a]] += G[a].w * (D[a * k + second[a]] - D[a * k + best[a]]);
+    let drop = -1;
+    for (let c = 0; c < k; c++) if (alive[c] && !pinned.has(c) && (drop < 0 || cost[c] < cost[drop])) drop = c;
+    if (drop < 0) break;
+    alive[drop] = 0; count--;
+  }
+  // Tauschen: gierige Entfernung kann Farbfamilien komplett verlieren (Rot, Orange, Dunkelorange
+  // ersetzen sich gegenseitig, bis alle weg sind). Jede gewählte Farbe gegen jede verworfene probieren.
+  const total = set => {
+    let e = 0;
+    for (let a = 0; a < m; a++) { let d = Infinity; for (const c of set) if (D[a * k + c] < d) d = D[a * k + c]; e += G[a].w * d; }
+    return e;
+  };
+  let chosen = [...alive.keys()].filter(c => alive[c]), err = total(chosen);
+  for (let pass = 0, improved = true; improved && pass < 4; pass++) {
+    improved = false;
+    for (let s = 0; s < chosen.length; s++) {
+      if (pinned.has(chosen[s])) continue;
+      for (let c = 0; c < k; c++) {
+        if (chosen.includes(c)) continue;
+        const trial = chosen.slice(); trial[s] = c;
+        const e = total(trial);
+        if (e < err * 0.999) { chosen = trial; err = e; improved = true; }
+      }
+    }
+  }
+  return chosen.sort((a, b) => a - b);
+}
