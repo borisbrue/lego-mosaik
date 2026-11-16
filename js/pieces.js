@@ -65,28 +65,66 @@ export function colorLab() {
 }
 const dist2 = (a, b) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2;
 
-// ---------- Ausreißer ----------
-/**
- * Entfernt einzelne Steine, die keinen gleichfarbigen 4er-Nachbarn haben,
- * wenn mindestens 5 der 8 Nachbarn eine gemeinsame Farbe haben (in place).
- */
-export function despeckle(grid, cols, rows) {
-  const src = Uint8Array.from(grid);
-  let changed = 0;
-  for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
-    const i = y * cols + x, v = src[i];
-    const n4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-    if (n4.some(([dx, dy]) => { const nx = x + dx, ny = y + dy; return nx >= 0 && ny >= 0 && nx < cols && ny < rows && src[ny * cols + nx] === v; })) continue;
-    const counts = new Map(); let total = 0;
-    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-      if (!dx && !dy) continue;
-      const nx = x + dx, ny = y + dy;
-      if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
-      const c = src[ny * cols + nx]; counts.set(c, (counts.get(c) || 0) + 1); total++;
+// ---------- Flächen vereinfachen ----------
+/** Zusammenhängende Flächen gleicher Farbe (4er-Nachbarschaft): Label je Zelle und Größe je Label. */
+export function components(grid, cols, rows) {
+  const n = cols * rows, label = new Int32Array(n).fill(-1), sizes = [], stack = [];
+  for (let s = 0; s < n; s++) {
+    if (label[s] >= 0) continue;
+    const id = sizes.length, v = grid[s];
+    let size = 0;
+    label[s] = id; stack.push(s);
+    while (stack.length) {
+      const i = stack.pop(); size++;
+      const x = i % cols;
+      for (const j of [x > 0 ? i - 1 : -1, x < cols - 1 ? i + 1 : -1, i - cols, i + cols]) {
+        if (j >= 0 && j < n && label[j] < 0 && grid[j] === v) { label[j] = id; stack.push(j); }
+      }
     }
-    let best = -1, bestN = 0;
-    for (const [c, n] of counts) if (n > bestN) { best = c; bestN = n; }
-    if (bestN >= Math.min(5, total - 1)) { grid[i] = best; changed++; }
+    sizes.push(size);
+  }
+  return { label, sizes };
+}
+
+/**
+ * Verschmilzt Farbinseln mit weniger als `minSize` Steinen mit der Nachbarfläche,
+ * die am längsten angrenzt und farblich am ähnlichsten ist (in place).
+ * Dünne, aber zusammenhängende Linien (Schrift, Kanten) bleiben erhalten, weil sie
+ * als Ganzes zählen. Kleine Inseln werden zuerst verschmolzen.
+ * @returns Anzahl geänderter Steine
+ */
+export function simplify(grid, cols, rows, minSize) {
+  if (minSize < 2) return 0;
+  const pal = colorLab();
+  let changed = 0;
+  for (let s = 2; s <= minSize; s = s < 6 ? s + 1 : Math.ceil(s * 1.4)) {
+    const lim = Math.min(s, minSize);
+    const { label, sizes } = components(grid, cols, rows);
+    const cells = new Map();
+    for (let i = 0; i < label.length; i++) if (sizes[label[i]] < lim) {
+      const l = label[i]; if (!cells.has(l)) cells.set(l, []); cells.get(l).push(i);
+    }
+    const order = [...cells.keys()].sort((a, b) => sizes[a] - sizes[b]);
+    for (const l of order) {
+      const list = cells.get(l), own = grid[list[0]];
+      const border = new Map();
+      for (const i of list) {
+        const x = i % cols;
+        for (const j of [x > 0 ? i - 1 : -1, x < cols - 1 ? i + 1 : -1, i - cols, i + cols]) {
+          if (j < 0 || j >= grid.length || grid[j] === own) continue;
+          border.set(grid[j], (border.get(grid[j]) || 0) + 1);
+        }
+      }
+      let best = -1, bestS = 0;
+      for (const [c, b] of border) {
+        const sc = b / (1 + Math.sqrt(dist2(pal[own], pal[c])) / 15);
+        if (sc > bestS) { bestS = sc; best = c; }
+      }
+      if (best < 0) continue;
+      for (const i of list) grid[i] = best;
+      changed += list.length;
+    }
+    if (lim === minSize) break;
   }
   return changed;
 }
@@ -99,16 +137,19 @@ export function despeckle(grid, cols, rows) {
  * @param sensitivity 0..100 (100 = schon kleine Farbunterschiede sind Kontur)
  * @param srcRgb optional Float32Array RGB je Zelle (Foto vor der Farbzuordnung)
  */
-export function autoShapes(grid, cols, rows, { area = 'plate-round', edge = 'tile', sensitivity = 50 } = {}, srcRgb = null) {
+export function autoShapes(grid, cols, rows, { area = 'plate-round', edge = 'tile', sensitivity = 50, minRegion = 3 } = {}, srcRgb = null) {
   const a = SHAPE_INDEX[area], e = edge === 'same' ? a : SHAPE_INDEX[edge];
   const out = new Uint8Array(cols * rows).fill(a);
   if (a === e) return out;
+  // Kontur nur zwischen echten Flächen, nicht an verstreuten Einzelsteinen (sonst Schachbrett)
+  const { label, sizes } = components(grid, cols, rows);
+  const solid = i => sizes[label[i]] >= minRegion;
   const pal = colorLab();
   const lab = srcRgb
     ? Array.from({ length: cols * rows }, (_, i) => rgbToLab(srcRgb[i * 3], srcRgb[i * 3 + 1], srcRgb[i * 3 + 2]))
     : Array.from(grid, c => pal[c]);
   const thr2 = (40 - 0.32 * sensitivity) ** 2; // 40 … 8 ΔE
-  const differs = (i, j) => grid[i] !== grid[j] && dist2(lab[i], lab[j]) > thr2;
+  const differs = (i, j) => grid[i] !== grid[j] && solid(i) && solid(j) && dist2(lab[i], lab[j]) > thr2;
   for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
     const i = y * cols + x;
     if ((x + 1 < cols && differs(i, i + 1)) || (x > 0 && differs(i, i - 1))
@@ -209,15 +250,23 @@ export function buildElements(project) {
   const els = [];
   const used = new Uint8Array(cols * rows);
   const mergeable = i => shapes[i] === SHAPE_TILE && !(overlay && overlay[i]);
+  // Fliesen laufen entlang einer Kante: an einer reinen senkrechten Kante nicht waagrecht zusammenfassen
+  const diff = (i, j) => j >= 0 && j < grid.length && grid[j] !== grid[i];
+  const vEdgeOnly = i => {
+    const x = i % cols;
+    const v = (x > 0 && diff(i, i - 1)) || (x < cols - 1 && diff(i, i + 1));
+    return v && !diff(i, i - cols) && !diff(i, i + cols);
+  };
+  const hMergeable = i => mergeable(i) && !vEdgeOnly(i);
   if (project.longTiles) {
     // waagrecht, ohne über Abschnittsgrenzen zu gehen
     for (let y = 0; y < rows; y++) for (let sx = 0; sx < cols; sx += SECTION) {
       const end = Math.min(cols, sx + SECTION);
       for (let x = sx; x < end;) {
         const i = y * cols + x;
-        if (!mergeable(i)) { x++; continue; }
+        if (!hMergeable(i)) { x++; continue; }
         let L = 1;
-        while (x + L < end && mergeable(i + L) && grid[i + L] === grid[i]) L++;
+        while (x + L < end && hMergeable(i + L) && grid[i + L] === grid[i]) L++;
         if (L >= 2) {
           let px = x;
           for (const l of splitRun(L)) {

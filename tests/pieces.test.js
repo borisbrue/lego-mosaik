@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { LEGO_COLORS } from '../js/colors.js';
 import { SHAPE_INDEX, SHAPE_TILE, SECTION, overlayCode } from '../js/parts.js';
 import {
-  overlayContains, overlayMask, overlayPath, despeckle, autoShapes, computeOverlays, splitRun, buildElements, countParts,
+  overlayContains, overlayMask, overlayPath, components, simplify, autoShapes, computeOverlays, splitRun, buildElements, countParts,
 } from '../js/pieces.js';
-import { dominantDownsample, unsharpMask, hexToRgb } from '../js/mosaic.js';
+import { dominantDownsample, unsharpMask, smoothCells, hexToRgb } from '../js/mosaic.js';
 import { buildOrderList } from '../js/orderlist.js';
 import { buildInstructionsHtml } from '../js/instructions.js';
 
@@ -41,14 +41,33 @@ test('splitRun: wenig Teile, keine unnötigen 1×1', () => {
   }
 });
 
-test('despeckle entfernt einzelne Ausreißer, lässt Linien stehen', () => {
-  const g = new Uint8Array(25).fill(WHITE);
-  g[12] = BLACK;                       // einzelner Punkt
-  assert.equal(despeckle(g, 5, 5), 1);
-  assert.equal(g[12], WHITE);
-  const line = new Uint8Array(25).fill(WHITE);
-  for (let x = 0; x < 5; x++) line[10 + x] = BLACK; // waagrechte Linie
-  assert.equal(despeckle(line, 5, 5), 0);
+test('components: Flächen und Größen (4er-Nachbarschaft)', () => {
+  const g = Uint8Array.from([1, 1, 2, 1, 2, 2, 3, 3, 2]); // 3×3
+  const { label, sizes } = components(g, 3, 3);
+  assert.equal(sizes.length, 3);
+  assert.equal(sizes[label[0]], 3);
+  assert.equal(sizes[label[2]], 4);
+  assert.equal(sizes[label[6]], 2);
+});
+
+test('simplify verschmilzt kleine Inseln, lässt dünne Linien stehen', () => {
+  const cols = 8, rows = 6, g = new Uint8Array(cols * rows).fill(BLACK);
+  g[1 * cols + 1] = RED;                                   // Einzelstein
+  g[4 * cols + 1] = WHITE; g[4 * cols + 2] = WHITE;        // Zweier-Insel
+  for (let y = 0; y < rows; y++) g[y * cols + 6] = WHITE;  // senkrechte Linie, 1 breit, 6 lang
+  const changed = simplify(g, cols, rows, 4);
+  assert.equal(changed, 3);
+  assert.equal(g[1 * cols + 1], BLACK);
+  assert.equal(g[4 * cols + 1], BLACK);
+  for (let y = 0; y < rows; y++) assert.equal(g[y * cols + 6], WHITE);
+  assert.equal(simplify(g, cols, rows, 1), 0);
+});
+
+test('simplify wählt bei gleicher Grenzlänge die ähnlichste Nachbarfarbe', () => {
+  const DRED = ci(154); // Dark Red: näher an Rot als Weiß
+  const g = Uint8Array.from([WHITE, RED, DRED]);
+  simplify(g, 3, 1, 2);
+  assert.equal(g[1], DRED);
 });
 
 test('autoShapes: Konturen eckig, Flächen rund', () => {
@@ -153,6 +172,34 @@ test('Anleitung zeigt halbe Noppen und Teile-Legende', () => {
   assert.ok(html.includes('class="part-legend"'));
 });
 
+test('Abtastung: dünnes helles Merkmal auf dunklem Umfeld bleibt erhalten', () => {
+  // 3×3 Zellen à 10×10 Pixel, alles schwarz; in der Mitte ein weißer Streifen mit 40 % bzw. 20 % Anteil
+  const run = share => {
+    const w = 30, h = 30, data = new Uint8ClampedArray(w * h * 4);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const on = y >= 10 && y < 20 && x >= 10 && x < 10 + share * 10;
+      data.set(on ? [255, 255, 255, 255] : [0, 0, 0, 255], (y * w + x) * 4);
+    }
+    return dominantDownsample(data, w, h, 3, 3, 1)[4 * 3];
+  };
+  assert.ok(run(0.4) > 250, `40 %: ${run(0.4)}`);
+  assert.ok(run(0.2) < 5, `20 %: ${run(0.2)}`);
+});
+
+test('Abtastung: weiche Flächen bleiben Mittelwert', () => {
+  const w = 4, h = 4, data = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < 16; i++) { const v = i < 8 ? 120 : 140; data.set([v, v, v, 255], i * 4); }
+  assert.ok(Math.abs(dominantDownsample(data, w, h, 1, 1, 1)[0] - 130) < 0.01);
+});
+
+test('smoothCells glättet Rauschen in Flächen, erhält Kanten', () => {
+  const cols = 6, rows = 1, px = new Float32Array(cols * 3);
+  [100, 110, 100, 230, 240, 230].forEach((v, i) => px.fill(v, i * 3, i * 3 + 3));
+  smoothCells(px, cols, rows, 0.5);
+  assert.ok(Math.abs(px[1 * 3] - 105) < 4, `Fläche: ${px[3]}`);
+  assert.ok(px[2 * 3] < 115 && px[3 * 3] > 215, `Kante: ${px[6]} / ${px[9]}`);
+});
+
 test('Schärfen: dominantDownsample kippt Kantenzelle zur Mehrheit', () => {
   // 1 Zelle aus 4×4 Pixeln: 12 schwarz, 4 weiß
   const w = 4, h = 4, data = new Uint8ClampedArray(w * h * 4);
@@ -172,3 +219,20 @@ test('unsharpMask erhöht den Kontrast an einer Kante', () => {
 });
 
 test('hexToRgb Hilfsfunktion', () => assert.deepEqual(hexToRgb('#FF8000'), [255, 128, 0]));
+
+test('autoShapes: verstreute Einzelsteine sind keine Kontur', () => {
+  const cols = 5, rows = 5, g = new Uint8Array(25).fill(WHITE);
+  g[12] = BLACK;
+  const s = autoShapes(g, cols, rows, { area: 'plate-round', edge: 'tile', sensitivity: 100 });
+  assert.ok(s.every(v => v === SHAPE_INDEX['plate-round']));
+});
+
+test('buildElements: lange Fliesen laufen entlang einer senkrechten Kante', () => {
+  // 4 Spalten × 4 Zeilen: links Weiß, rechts Schwarz, alles eckige Fliesen
+  const cols = 4, rows = 4, n = cols * rows, grid = new Uint8Array(n);
+  for (let i = 0; i < n; i++) grid[i] = i % cols < 2 ? WHITE : BLACK;
+  const els = buildElements({ cols, rows, grid, shapes: new Uint8Array(n).fill(SHAPE_TILE), longTiles: true });
+  const longs = els.filter(e => e.kind === 'long');
+  assert.equal(longs.length, 4);
+  assert.ok(longs.every(e => e.w === 1 && e.h === 4), JSON.stringify(longs));
+});

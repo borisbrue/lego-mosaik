@@ -127,6 +127,18 @@ export function unsharpMask(data, w, h, amount, r) {
 export function dominantDownsample(data, w, h, cols, rows, dominance) {
   const out = boxDownsample(data, w, h, cols, rows);
   if (dominance <= 0) return out;
+  const base = Float32Array.from(out);
+  // Mittelwert der 8 Nachbarzellen: das Umfeld, gegen das sich ein Merkmal abheben muss
+  const around = (r, c) => {
+    const m = [0, 0, 0]; let n = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const y = r + dy, x = c + dx;
+      if ((!dx && !dy) || y < 0 || x < 0 || y >= rows || x >= cols) continue;
+      const o = (y * cols + x) * 3; m[0] += base[o]; m[1] += base[o + 1]; m[2] += base[o + 2]; n++;
+    }
+    return m.map(v => v / n);
+  };
+  const d2 = (a, b) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2;
   const px = [];
   for (let r = 0; r < rows; r++) {
     const y0 = Math.floor((r * h) / rows), y1 = Math.max(y0 + 1, Math.floor(((r + 1) * h) / rows));
@@ -152,13 +164,54 @@ export function dominantDownsample(data, w, h, cols, rows, dominance) {
         if (n0) c0 = s0.map(v => v / n0);
         if (n1) c1 = s1.map(v => v / n1);
       }
-      // Nur bei klar getrennten Gruppen eingreifen
-      if (!n0 || !n1 || (c0[0] - c1[0]) ** 2 + (c0[1] - c1[1]) ** 2 + (c0[2] - c1[2]) ** 2 < 900) continue;
-      const dom = n0 >= n1 ? c0 : c1, o = (r * cols + c) * 3;
-      for (let k = 0; k < 3; k++) out[o + k] += dominance * (dom[k] - out[o + k]);
+      // Adaptiv: je deutlicher die zwei Gruppen getrennt sind (Schrift, Fenster, harte Kanten),
+      // desto stärker zählt die dominante Gruppe. Weiche Flächen (Haut, Verläufe) bleiben Mittelwert.
+      if (!n0 || !n1) continue;
+      const sep = Math.sqrt((c0[0] - c1[0]) ** 2 + (c0[1] - c1[1]) ** 2 + (c0[2] - c1[2]) ** 2);
+      const f = Math.min(1, Math.max(0, (sep - 40) / 70));
+      if (!f) continue;
+      const wt = f * f * (3 - 2 * f) * dominance;
+      // Größere Gruppe gewinnt – außer die kleinere füllt ≥ 30 % und hebt sich stärker vom Umfeld ab
+      // (dünne Schrift, Fenster, Lichter): dann ist sie das Merkmal der Zelle.
+      let dom = n0 >= n1 ? c0 : c1;
+      const minor = n0 >= n1 ? c1 : c0, minorShare = Math.min(n0, n1) / (n0 + n1);
+      if (minorShare >= 0.3) { const env = around(r, c); if (d2(minor, env) > d2(dom, env)) dom = minor; }
+      const o = (r * cols + c) * 3;
+      for (let k = 0; k < 3; k++) out[o + k] += wt * (dom[k] - out[o + k]);
     }
   }
   return out;
+}
+
+/**
+ * Kantenerhaltendes Glätten auf dem Zellraster (bilateral, 3×3): ähnliche Nachbarn werden
+ * gemittelt, deutlich andere nicht. Nimmt Rauschen aus Flächen, ohne Konturen aufzuweichen.
+ * @param strength 0..1
+ */
+export function smoothCells(px, cols, rows, strength) {
+  if (strength <= 0) return px;
+  const sigma = 14 + 30 * strength, inv = 1 / (2 * sigma * sigma);
+  const iters = strength > 0.5 ? 2 : 1;
+  let src = px;
+  for (let it = 0; it < iters; it++) {
+    const out = new Float32Array(src.length);
+    for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+      const o = (y * cols + x) * 3;
+      let wr = 0, sr = 0, sg = 0, sb = 0;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const nx = x + dx, ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
+        const q = (ny * cols + nx) * 3;
+        const d = (src[q] - src[o]) ** 2 + (src[q + 1] - src[o + 1]) ** 2 + (src[q + 2] - src[o + 2]) ** 2;
+        const w = Math.exp(-d * inv) * (dx && dy ? 0.5 : 1);
+        wr += w; sr += w * src[q]; sg += w * src[q + 1]; sb += w * src[q + 2];
+      }
+      out[o] = sr / wr; out[o + 1] = sg / wr; out[o + 2] = sb / wr;
+    }
+    src = out;
+  }
+  px.set(src);
+  return px;
 }
 
 /** Helligkeit (-100..100), Kontrast (-100..100), Sättigung (-100..100) anwenden (in place). */

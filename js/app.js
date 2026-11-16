@@ -1,8 +1,8 @@
 import { LEGO_COLORS, PALETTE_PRESETS } from './colors.js';
 import { STUD_PARTS, STUD_MM, SECTION, PAPER_FORMATS, paperStuds, SHAPE_KEYS, SHAPE_INDEX, SHAPE_PLATE, overlayCode } from './parts.js';
-import { autoShapes, computeOverlays, despeckle, buildElements, overlayPath } from './pieces.js';
+import { autoShapes, computeOverlays, simplify, buildElements, overlayPath } from './pieces.js';
 import { planSubstructure } from './substructure.js';
-import { boxDownsample, dominantDownsample, unsharpMask, adjustPixels, preparePalette, quantize, countColors } from './mosaic.js';
+import { boxDownsample, dominantDownsample, unsharpMask, smoothCells, adjustPixels, preparePalette, quantize, countColors } from './mosaic.js';
 import { renderMosaic, drawSectionLines } from './render.js';
 import { Editor } from './editor.js';
 import { buildOrderList, orderListToCsv, orderListToBrickLinkXml } from './orderlist.js';
@@ -25,7 +25,7 @@ function defaultProject() {
     longTiles: true,          // eckige Fliesen zu 1×2–1×4 zusammenfassen
     relief: 0,                // halbe Noppen: 0 = aus … 100 = viele
     sharpen: 30,              // 0..100
-    despeckle: false,
+    simplify: 30,             // 0..100: Farbinseln verschmelzen, Flächen glätten
     crop: { zoom: 1, cx: 0.5, cy: 0.5 },
     adjust: { brightness: 0, contrast: 0, saturation: 0 },
     dither: 0,
@@ -88,6 +88,8 @@ function deserialize(data) {
   const p = { ...defaultProject(), ...data };
   p.crop = { ...defaultProject().crop, ...data.crop };
   p.adjust = { ...defaultProject().adjust, ...data.adjust };
+  if (data.simplify === undefined) p.simplify = data.despeckle ? 20 : 0; // ältere Projekte
+  delete p.despeckle;
   // Ältere Projekte: unbekannte Formatvorgabe → eigenes Format mit den gespeicherten Maßen
   if (!sizeOptionExists(p.sizePreset)) p.sizePreset = 'custom';
   delete p.sw; delete p.sh;
@@ -189,7 +191,7 @@ function sampleImage() {
   const sharp = project.sharpen / 100;
   unsharpMask(data, w, h, sharp * 1.5, Math.max(1, Math.round(k / 2)));
   sampled = {
-    cells: dominantDownsample(data, w, h, project.cols, project.rows, sharp),
+    cells: dominantDownsample(data, w, h, project.cols, project.rows, Math.min(1, 0.6 + sharp)),
     sub: boxDownsample(data, w, h, project.cols * SUB, project.rows * SUB),
   };
   sampledKey = key;
@@ -209,10 +211,12 @@ function regenerate() {
   const { cols, rows } = project;
   const smp = sampleImage();
   const px = adjustPixels(Float32Array.from(smp.cells), project.adjust);
+  const simp = project.simplify / 100;
+  smoothCells(px, cols, rows, simp);
   const prepared = preparePalette(idx.map(i => LEGO_COLORS[i]));
   const q = quantize(px, cols, rows, prepared, { dither: project.dither / 100 });
   const grid = Uint8Array.from(q, i => idx[i]);
-  if (project.despeckle) despeckle(grid, cols, rows);
+  if (simp > 0) simplify(grid, cols, rows, 1 + Math.round(simp ** 1.5 * cols * rows / 300));
   const shapes = autoShapes(grid, cols, rows, { area: project.part, edge: project.edgePart, sensitivity: project.edgeSensitivity }, px);
   let overlay = new Uint8Array(cols * rows), overlayColor = new Uint8Array(cols * rows);
   if (project.relief > 0) {
@@ -316,7 +320,7 @@ function syncControls() {
   $('#chk-long').checked = project.longTiles;
   $('#adj-relief').value = project.relief; $('#out-relief').textContent = project.relief;
   $('#adj-sharpen').value = project.sharpen; $('#out-sharpen').textContent = project.sharpen;
-  $('#chk-despeckle').checked = project.despeckle;
+  $('#adj-simplify').value = project.simplify; $('#out-simplify').textContent = project.simplify;
   for (const k of ['brightness', 'contrast', 'saturation']) {
     $(`#adj-${k}`).value = project.adjust[k]; $(`#out-${k}`).textContent = project.adjust[k];
   }
@@ -389,7 +393,7 @@ function initDesign() {
   $('#chk-long').addEventListener('change', e => { project.longTiles = e.target.checked; updateDesignView(); save(); });
   $('#adj-relief').addEventListener('input', e => { project.relief = +e.target.value; $('#out-relief').textContent = e.target.value; regenerateSoon(); });
   $('#adj-sharpen').addEventListener('input', e => { project.sharpen = +e.target.value; $('#out-sharpen').textContent = e.target.value; regenerateSoon(); });
-  $('#chk-despeckle').addEventListener('change', e => setAndRegen('despeckle', e.target.checked));
+  $('#adj-simplify').addEventListener('input', e => { project.simplify = +e.target.value; $('#out-simplify').textContent = e.target.value; regenerateSoon(); });
   for (const k of ['brightness', 'contrast', 'saturation']) {
     $(`#adj-${k}`).addEventListener('input', e => {
       project.adjust[k] = +e.target.value; $(`#out-${k}`).textContent = e.target.value; regenerateSoon();
