@@ -65,6 +65,7 @@ legend { font-weight: 800; padding: 0; float: left; width: 100%; margin-bottom: 
 .row { display: flex; gap: .6rem; } .row > * { flex: 1; } .row.wrap { flex-wrap: wrap; align-items: end; } .row.wrap > * { flex: 0 0 auto; }
 .check { display: inline-flex; align-items: center; gap: .35rem; font-size: .9rem; }
 .hint { color: var(--muted); font-size: .8rem; margin: 0; }
+.hint.warn { color: var(--text, inherit); background: #fff4d6; border-left: 3px solid #e0a100; padding: .4rem .55rem; border-radius: 4px; margin-top: .4rem; }
 
 .drop-zone {
   display: grid; place-items: center; min-height: 90px; border: 2px dashed #c4beb1; border-radius: var(--radius);

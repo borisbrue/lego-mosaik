@@ -1,5 +1,5 @@
 // Service Worker: App-Shell offline verfügbar machen.
-const VERSION = 'v7';
+const VERSION = 'v8';
 const CACHE = `mosaik-studio-${VERSION}`;
 const ASSETS = [
   './', 'index.html', 'manifest.webmanifest', 'css/style.css',

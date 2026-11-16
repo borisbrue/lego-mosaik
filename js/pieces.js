@@ -102,10 +102,14 @@ export function components(grid, cols, rows) {
  * die am längsten angrenzt und farblich am ähnlichsten ist (in place).
  * Dünne, aber zusammenhängende Linien (Schrift, Kanten) bleiben erhalten, weil sie
  * als Ganzes zählen. Kleine Inseln werden zuerst verschmolzen.
+ * Kontrastschutz: eine Insel mit mindestens `keepMin` Steinen, die sich von allen Nachbarn um
+ * mindestens `keepContrast` (ΔE76) abhebt (Augen, Lichter, Schrift), bleibt stehen – auf kleinen
+ * Formaten sind das oft die Details, an denen man das Motiv erkennt.
  * @returns Anzahl geänderter Steine
  */
-export function simplify(grid, cols, rows, minSize) {
+export function simplify(grid, cols, rows, minSize, { keepContrast = 0, keepMin = 2 } = {}) {
   if (minSize < 2) return 0;
+  const keep2 = keepContrast > 0 ? keepContrast * keepContrast : Infinity;
   const pal = colorLab();
   let changed = 0;
   for (let s = 2; s <= minSize; s = s < 6 ? s + 1 : Math.ceil(s * 1.7)) {
@@ -128,14 +132,16 @@ export function simplify(grid, cols, rows, minSize) {
         if (i >= cols) add(grid[i - cols]);
         if (i + cols < n) add(grid[i + cols]);
       }
-      let best = -1, bestS = 0;
+      let best = -1, bestS = 0, minD2 = Infinity;
       for (const c of touched) {
-        const sc = border[c] / (1 + Math.sqrt(dist2(pal[own], pal[c])) / 15);
+        const d2 = dist2(pal[own], pal[c]);
+        if (d2 < minD2) minD2 = d2;
+        const sc = border[c] / (1 + Math.sqrt(d2) / 15);
         if (sc > bestS) { bestS = sc; best = c; }
         border[c] = 0;
       }
       touched.length = 0;
-      if (best < 0) continue;
+      if (best < 0 || (list.length >= keepMin && minD2 >= keep2)) continue;
       for (const i of list) grid[i] = best;
       changed += list.length;
     }

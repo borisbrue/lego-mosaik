@@ -5,7 +5,7 @@ import { cutout, cellsFromCutout, cutoutRgb } from './cutout.js';
 import { autoDepth, planRisers } from './layers.js';
 import { segment, regionAt, regionAnchor, regionGroup, applyRegionOps } from './regions.js';
 import { planSubstructure } from './substructure.js';
-import { boxDownsample, dominantDownsample, unsharpMask, smoothCells, reducePalette, adjustPixels, preparePalette, quantize, countColors } from './mosaic.js';
+import { boxDownsample, dominantDownsample, unsharpMask, smoothCells, reducePalette, adjustPixels, preparePalette, quantize, countColors, sizeScale, detailWeights } from './mosaic.js';
 import { renderMosaic, drawSectionLines } from './render.js';
 import { Editor } from './editor.js';
 import { buildOrderList, orderListToCsv, orderListToBrickLinkXml } from './orderlist.js';
@@ -248,33 +248,41 @@ function regenerate() {
   const { cols, rows } = project;
   const smp = sampleImage();
   const px = adjustPixels(Float32Array.from(smp.cells), project.adjust);
+  const scale = sizeScale(cols, rows); // kleine Formate milder vereinfachen
+  $('#small-hint').hidden = !(scale < 0.7 && project.crop.zoom < 1.5);
   const simp = project.simplify / 100;
-  smoothCells(px, cols, rows, simp);
+  const weights = detailWeights(px, cols, rows); // vor dem Glätten: echte Detailkanten
+  smoothCells(px, cols, rows, simp * scale);
   if (project.colorCount > 0) {
     const pinned = new Set(idx.flatMap((ci, k) => (project.pinned.includes(LEGO_COLORS[ci].legoId) ? [k] : [])));
-    idx = reducePalette(px, preparePalette(idx.map(i => LEGO_COLORS[i])), project.colorCount, pinned).map(k => idx[k]);
+    idx = reducePalette(px, preparePalette(idx.map(i => LEGO_COLORS[i])), project.colorCount, pinned, weights).map(k => idx[k]);
   }
   chosenColors = new Set(idx);
   const prepared = preparePalette(idx.map(i => LEGO_COLORS[i]));
   const sub = adjustPixels(Float32Array.from(smp.sub), project.adjust);
   let grid, template = sub; // Vorlage für die Formteile: Foto oder Scherenschnitt
   if (project.cutout > 0) {
-    const g = cutout(sub, cols * SUB, rows * SUB, idx, prepared, project.cutout);
+    const g = cutout(sub, cols * SUB, rows * SUB, idx, prepared, project.cutout, scale);
     grid = cellsFromCutout(g, cols, rows, SUB);
     template = cutoutRgb(g);
   } else {
     grid = Uint8Array.from(quantize(px, cols, rows, prepared, { dither: project.dither / 100 }), i => idx[i]);
-    if (simp > 0) simplify(grid, cols, rows, 1 + Math.round(simp ** 1.5 * cols * rows / 300));
+    if (simp > 0) simplify(grid, cols, rows, 1 + Math.round(simp ** 1.5 * scale * scale * cols * rows / 300),
+      { keepContrast: 30 + 40 * scale, keepMin: 1 });
   }
   segmentation = segment(px, cols, rows, project.regionDetail);
   const ops = project.regionOps.map(o => ({ ...o, color: o.colorId != null ? indexByLegoId.get(o.colorId) : null }));
   const { hidden, levels } = applyRegionOps(grid, cols, rows, segmentation, ops);
   const shapes = autoShapes(grid, cols, rows, { area: project.part, edge: project.edgePart, sensitivity: project.edgeSensitivity }, px);
   // Formteile: erst die großen (2×2), dann die kleinen (1×1) in den übrigen Zellen
-  const { overlay, overlayColor } = fitBigPieces(template, grid, cols, rows, SUB, project.bigPieces, hidden);
-  if (project.relief > 0) {
+  // Auf kleinen Formaten (unter ≈ 1400 Noppen, z. B. A4) sind 2×2-Formteile im Verhältnis riesig
+  // und zerhacken Gesichter und Schrift – dort nur 1×1-Formteile.
+  const bigStrength = scale >= 0.6 ? project.bigPieces : 0;
+  const smallStrength = project.relief;
+  const { overlay, overlayColor } = fitBigPieces(template, grid, cols, rows, SUB, bigStrength, hidden);
+  if (smallStrength > 0) {
     const blocked = Uint8Array.from(overlay, (v, i) => (v || hidden[i] ? 1 : 0));
-    const small = computeOverlays(template, grid, cols, rows, SUB, project.relief, blocked);
+    const small = computeOverlays(template, grid, cols, rows, SUB, smallStrength, blocked);
     for (let i = 0; i < overlay.length; i++) if (small.overlay[i]) { overlay[i] = small.overlay[i]; overlayColor[i] = small.overlayColor[i]; }
   }
   for (let i = 0; i < overlay.length; i++) if (overlay[i]) shapes[i] = SHAPE_PLATE;

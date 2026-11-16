@@ -183,6 +183,37 @@ export function dominantDownsample(data, w, h, cols, rows, dominance) {
   return out;
 }
 
+/** Bezugsgröße: ab etwa A2 (≈ 3800 Noppen) wirkt jede Vereinfachung voll. */
+const FULL_SCALE_CELLS = 3800;
+/**
+ * Größenfaktor 0.35..1: Auf kleinen Formaten trägt jede Noppe mehr vom Motiv, Vereinfachungen
+ * (Mindestflächen, Glätten, Umrisse runden) müssen dort schwächer wirken, sonst verschwinden
+ * Gesichter, Figuren und Schrift.
+ */
+export function sizeScale(cols, rows) {
+  return Math.min(1, Math.max(0.35, Math.sqrt((cols * rows) / FULL_SCALE_CELLS)));
+}
+
+/**
+ * Detailgewicht je Zelle (1..4): Zellen mit starkem Kontrast zu ihren Nachbarn (Augen, Schrift,
+ * Umrisse) zählen bei der Farbauswahl mehr als ruhige Flächen – sonst gewinnen bei wenigen Farben
+ * immer die großen Hintergrundflächen, und die Farbe eines kleinen Details fällt weg.
+ */
+export function detailWeights(px, cols, rows) {
+  const n = cols * rows, w = new Float32Array(n);
+  for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+    const i = y * cols + x, o = i * 3;
+    let m = 0;
+    for (const j of [x > 0 ? i - 1 : -1, x < cols - 1 ? i + 1 : -1, y > 0 ? i - cols : -1, y < rows - 1 ? i + cols : -1]) {
+      if (j < 0) continue;
+      const q = j * 3, d = (px[q] - px[o]) ** 2 + (px[q + 1] - px[o + 1]) ** 2 + (px[q + 2] - px[o + 2]) ** 2;
+      if (d > m) m = d;
+    }
+    w[i] = 1 + 3 * Math.min(1, Math.sqrt(m) / 120);
+  }
+  return w;
+}
+
 /**
  * Kantenerhaltendes Glätten auf dem Zellraster (bilateral, 3×3): ähnliche Nachbarn werden
  * gemittelt, deutlich andere nicht. Nimmt Rauschen aus Flächen, ohne Konturen aufzuweichen.
@@ -321,7 +352,7 @@ export function floodFill(grid, cols, rows, start, value) {
  * @param pinned Set von Indizes in `prepared`, die bleiben müssen
  * @returns aufsteigend sortierte Indizes in `prepared`
  */
-export function reducePalette(px, prepared, n, pinned = new Set()) {
+export function reducePalette(px, prepared, n, pinned = new Set(), weights = null) {
   const k = prepared.length;
   if (n <= 0 || n >= k) return prepared.map((_, i) => i);
   // Gleiche Zellfarben zusammenfassen (Gewicht = Anzahl), sonst wird es bei großen Formaten langsam
@@ -329,10 +360,10 @@ export function reducePalette(px, prepared, n, pinned = new Set()) {
   for (let i = 0; i < px.length; i += 3) {
     // Gruppen auf 32 Stufen je Kanal: genau genug für die Auswahl, aber viel schneller
     const key = (Math.round(px[i] / 8) << 10) | (Math.round(px[i + 1] / 8) << 5) | Math.round(px[i + 2] / 8);
-    const g = groups.get(key);
-    if (g) { g.r += px[i]; g.g += px[i + 1]; g.b += px[i + 2]; g.w++; } else groups.set(key, { r: px[i], g: px[i + 1], b: px[i + 2], w: 1 });
+    const g = groups.get(key), w = weights ? weights[i / 3] : 1;
+    if (g) { g.r += px[i]; g.g += px[i + 1]; g.b += px[i + 2]; g.n++; g.w += w; } else groups.set(key, { r: px[i], g: px[i + 1], b: px[i + 2], n: 1, w });
   }
-  const G = [...groups.values()].map(g => ({ r: g.r / g.w, g: g.g / g.w, b: g.b / g.w, w: g.w })), m = G.length;
+  const G = [...groups.values()].map(g => ({ r: g.r / g.n, g: g.g / g.n, b: g.b / g.n, w: g.w })), m = G.length;
   const D = new Float32Array(m * k);
   G.forEach((g, a) => {
     const lab = rgbToLab(clamp(g.r), clamp(g.g), clamp(g.b));

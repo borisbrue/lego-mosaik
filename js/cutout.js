@@ -38,10 +38,12 @@ export function modeFilter(g, W, H, iterations = 1) {
  * @param idx    erlaubte Farben (Indizes in LEGO_COLORS)
  * @param prepared Palette zu idx (preparePalette)
  * @param strength 1..100 (höher = gröber: größere Mindestflächen, rundere Umrisse)
+ * @param scale  Größenfaktor (sizeScale): kleine Formate werden milder vereinfacht und
+ *               kontrastreiche kleine Details (Augen, Schrift) bleiben stehen
  * @returns Uint8Array Farbindex (LEGO_COLORS) je Teilpixel
  */
-export function cutout(subRgb, W, H, idx, prepared, strength) {
-  const t = Math.min(1, Math.max(0, strength / 100));
+export function cutout(subRgb, W, H, idx, prepared, strength, scale = 1) {
+  const t0 = Math.min(1, Math.max(0, strength / 100)), t = t0 * scale;
   const px = Float32Array.from(subRgb);
   smoothCells(px, W, H, 0.35 + 0.65 * t);
   if (t > 0.3) smoothCells(px, W, H, t);
@@ -53,10 +55,13 @@ export function cutout(subRgb, W, H, idx, prepared, strength) {
     if (c === undefined) { c = idx[nearestColor(rgbToLab(r, gg, b), prepared)]; cache.set(key, c); }
     g[i] = c;
   }
-  const minSize = Math.max(6, Math.round(6 + t ** 1.5 * W * H / 120));
-  simplify(g, W, H, minSize);
+  // Mindestfläche: Anteil am Bild, auf kleinen Formaten zusätzlich kleiner (scale²)
+  const minSize = Math.max(6, Math.round(6 + t0 ** 1.5 * scale * scale * W * H / 120));
+  // Kontrastschutz: je kleiner das Format, desto eher bleibt ein kleines, deutlich abgesetztes Detail
+  const keep = { keepContrast: 30 + 40 * scale, keepMin: 6 };
+  simplify(g, W, H, minSize, keep);
   modeFilter(g, W, H, 1 + Math.round(t * 6));
-  simplify(g, W, H, minSize);
+  simplify(g, W, H, minSize, keep);
   return g;
 }
 
