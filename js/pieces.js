@@ -60,7 +60,7 @@ export function overlayMask(code, S) {
   return m;
 }
 export const ALL_OVERLAY_CODES = OVERLAY_PARTS.flatMap((_, k) => [0, 1, 2, 3].map(r => overlayCode(k, r)));
-const SMALL_CODES = ALL_OVERLAY_CODES.filter(c => overlaySize(c) === 1);
+export const SMALL_CODES = ALL_OVERLAY_CODES.filter(c => overlaySize(c) === 1);
 const BIG_CODES = ALL_OVERLAY_CODES.filter(c => overlaySize(c) === 2);
 // Formteile nur an echten Konturen: Teil und Untergrund müssen sich deutlich unterscheiden (ΔE76),
 // sonst entsteht zwischen ähnlichen Farben ein unruhiges Muster statt einer Kante.
@@ -188,14 +188,15 @@ export function autoShapes(grid, cols, rows, { area = 'plate-round', edge = 'til
  * @param strength 0..100 (0 = aus)
  * @returns {{overlay: Uint8Array, overlayColor: Uint8Array, count: number}}
  */
-export function computeOverlays(subRgb, grid, cols, rows, S, strength, blocked = null) {
+export function computeOverlays(subRgb, grid, cols, rows, S, strength, blocked = null, { keep: keepMax = null } = {}) {
   const n = cols * rows;
   const overlay = new Uint8Array(n), overlayColor = new Uint8Array(n);
   if (strength <= 0) return { overlay, overlayColor, count: 0 };
   const lab = colorLab();
   const W = cols * S, SS = S * S;
   const t = strength / 100;
-  const keep = 0.8 - 0.4 * t;      // Anteil des Fehlers, der höchstens übrig bleiben darf
+  // Anteil des Fehlers, der höchstens übrig bleiben darf (Grafik: streng, nur fast exakte Treffer)
+  const keep = keepMax ?? 0.8 - 0.4 * t;
   const minGain = 150 - 120 * t;   // Mindestgewinn je Teilpixel (ΔE², 150 ≈ ΔE 12 … 30 ≈ ΔE 5,5)
   const minSpread = 200 - 120 * t; // Mindest-Streuung in der Zelle (ΔE², ≈ ΔE 14 … 9)
   const masks = SMALL_CODES.map(c => [c, overlayMask(c, S)]);

@@ -48,3 +48,29 @@ test('reducePalette: Detailgewichte retten die Farbe eines kleinen Details', () 
   assert.ok(!plain.includes(21), `ohne Gewicht kein Rot: ${plain}`);
   assert.ok(weighted.includes(21), `mit Gewicht Rot: ${weighted}`);
 });
+
+test('flatness: flache Grafik hoch, verrauschtes Foto niedrig', async () => {
+  const { flatness, GRAPHIC_FLATNESS } = await import('../js/mosaic.js');
+  const w = 40, h = 40, flat = new Uint8ClampedArray(w * h * 4), noisy = new Uint8ClampedArray(w * h * 4);
+  let seed = 3; const rnd = () => (seed = (seed * 16807) % 2147483647) % 60;
+  for (let i = 0; i < w * h; i++) {
+    const v = (i % w) < 20 ? 30 : 220;
+    flat.set([v, v, v, 255], i * 4);
+    noisy.set([v + rnd() - 30, v + rnd() - 30, v + rnd() - 30, 255], i * 4);
+  }
+  assert.ok(flatness(flat, w, h) > 0.9);
+  assert.ok(flatness(noisy, w, h) < GRAPHIC_FLATNESS);
+});
+
+test('graphicSub + cellsFromCutout: exakte Mehrheit je Noppe, keine Glättung', async () => {
+  const { graphicSub, cellsFromCutout } = await import('../js/cutout.js');
+  const { hexToRgb } = await import('../js/mosaic.js');
+  // 3×1 Zellen à 2×2 Teilpixel: weiß | schwarz | 3 schwarz + 1 weiß
+  const cols = 3, S = 2, W = cols * S, sub = new Float32Array(W * S * 3);
+  const put = (x, y, c) => sub.set(hexToRgb(LEGO_COLORS[c].hex), (y * W + x) * 3);
+  for (let y = 0; y < S; y++) for (let x = 0; x < W; x++) put(x, y, x < 2 ? WHITE : BLACK);
+  put(5, 1, WHITE);
+  const idx = [WHITE, BLACK];
+  const g = graphicSub(sub, W, S, idx, preparePalette(idx.map(i => LEGO_COLORS[i])));
+  assert.deepEqual(Array.from(cellsFromCutout(g, cols, 1, S)), [WHITE, BLACK, BLACK]);
+});

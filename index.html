@@ -87,6 +87,11 @@
 
           <fieldset id="design-detail">
             <legend>Detailgrad</legend>
+            <label class="field"><span>Bildart</span><select id="image-kind">
+              <option value="auto">automatisch erkennen</option>
+              <option value="photo">Foto / Gemälde (glätten)</option>
+              <option value="graphic">Grafik / Pixel-Art (exakt rastern)</option>
+            </select></label>
             <label class="field range"><span>Scherenschnitt ↔ fein <output id="out-detail-level">eigene</output></span><input id="adj-detail" type="range" min="1" max="5" step="1" value="4" list="detail-ticks"></label>
             <datalist id="detail-ticks"><option value="1"></option><option value="2"></option><option value="3"></option><option value="4"></option><option value="5"></option></datalist>
             <p class="hint">Ein Regler für alles: 1 = Scherenschnitt mit wenigen Farben, großen glatten Flächen und großen Formteilen, 5 = Foto mit vielen Farben und Details. Er stellt Farben, Scherenschnitt, Vereinfachen und Formteile passend ein; die Einzelregler darunter bleiben zum Feintuning.</p>

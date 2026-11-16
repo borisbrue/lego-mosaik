@@ -65,6 +65,22 @@ export function cutout(subRgb, W, H, idx, prepared, strength, scale = 1) {
   return g;
 }
 
+/**
+ * Grafik-Modus: jedes Teilpixel bekommt seine nächste LEGO-Farbe, ohne Glätten. Flache Grafiken
+ * haben bereits saubere Flächen und rechte Winkel – Glätten würde sie zu Klecksen runden.
+ */
+export function graphicSub(subRgb, W, H, idx, prepared) {
+  const g = new Uint8Array(W * H), cache = new Map();
+  for (let i = 0; i < W * H; i++) {
+    const r = subRgb[i * 3], gg = subRgb[i * 3 + 1], b = subRgb[i * 3 + 2];
+    const key = (Math.round(r / 4) << 12) | (Math.round(gg / 4) << 6) | Math.round(b / 4);
+    let c = cache.get(key);
+    if (c === undefined) { c = idx[nearestColor(rgbToLab(r, gg, b), prepared)]; cache.set(key, c); }
+    g[i] = c;
+  }
+  return g;
+}
+
 /** Steinfarben: Mehrheit der S×S Teilpixel je Zelle. */
 export function cellsFromCutout(g, cols, rows, S) {
   const W = cols * S, grid = new Uint8Array(cols * rows), counts = new Uint16Array(256);

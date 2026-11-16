@@ -183,6 +183,23 @@ export function dominantDownsample(data, w, h, cols, rows, dominance) {
   return out;
 }
 
+/**
+ * Flachheit eines Bildes (0..1): Anteil der Pixel, deren rechter und unterer Nachbar praktisch
+ * gleich sind. Flache Grafiken (Vektor, Pixel-Art, Logos) liegen bei ≈ 0,7–1, Fotos und gemalte
+ * Plakate bei ≈ 0,1–0,5.
+ */
+export function flatness(data, w, h) {
+  let flat = 0;
+  for (let y = 0; y < h - 1; y++) for (let x = 0; x < w - 1; x++) {
+    const i = (y * w + x) * 4, r = i + 4, d = i + w * 4;
+    if (Math.abs(data[i] - data[r]) <= 6 && Math.abs(data[i + 1] - data[r + 1]) <= 6 && Math.abs(data[i + 2] - data[r + 2]) <= 6
+      && Math.abs(data[i] - data[d]) <= 6 && Math.abs(data[i + 1] - data[d + 1]) <= 6 && Math.abs(data[i + 2] - data[d + 2]) <= 6) flat++;
+  }
+  return w > 1 && h > 1 ? flat / ((w - 1) * (h - 1)) : 0;
+}
+/** Ab dieser Flachheit gilt ein Bild als Grafik. */
+export const GRAPHIC_FLATNESS = 0.6;
+
 /** Bezugsgröße: ab etwa A2 (≈ 3800 Noppen) wirkt jede Vereinfachung voll. */
 const FULL_SCALE_CELLS = 3800;
 /**

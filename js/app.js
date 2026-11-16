@@ -1,11 +1,12 @@
 import { LEGO_COLORS, PALETTE_PRESETS } from './colors.js';
 import { STUD_PARTS, STUD_MM, SECTION, PAPER_FORMATS, paperStuds, SHAPE_KEYS, SHAPE_INDEX, SHAPE_PLATE, overlayCode } from './parts.js';
 import { autoShapes, computeOverlays, fitBigPieces, simplify, buildElements, overlayPath } from './pieces.js';
-import { cutout, cellsFromCutout, cutoutRgb } from './cutout.js';
+import { cutout, cellsFromCutout, cutoutRgb, graphicSub } from './cutout.js';
+import { snapObjects } from './shapes.js';
 import { autoDepth, planRisers } from './layers.js';
 import { segment, regionAt, regionAnchor, regionGroup, applyRegionOps } from './regions.js';
 import { planSubstructure } from './substructure.js';
-import { boxDownsample, dominantDownsample, unsharpMask, smoothCells, reducePalette, adjustPixels, preparePalette, quantize, countColors, sizeScale, detailWeights } from './mosaic.js';
+import { boxDownsample, dominantDownsample, unsharpMask, smoothCells, reducePalette, adjustPixels, preparePalette, quantize, countColors, sizeScale, detailWeights, flatness, GRAPHIC_FLATNESS } from './mosaic.js';
 import { renderMosaic, drawSectionLines } from './render.js';
 import { Editor } from './editor.js';
 import { buildOrderList, orderListToCsv, orderListToBrickLinkXml } from './orderlist.js';
@@ -29,6 +30,7 @@ function defaultProject() {
     relief: 0,                // halbe Noppen: 0 = aus … 100 = viele
     sharpen: 30,              // 0..100
     detail: 0,                // Detailgrad 1 (Scherenschnitt) … 5 (Foto), 0 = eigene Einstellung
+    imageKind: 'auto',        // 'auto' | 'photo' | 'graphic': Grafiken werden exakt gerastert statt geglättet
     cutout: 0,                // 0..100: Scherenschnitt (glatte, flache Farbflächen); 0 = aus
     bigPieces: 0,             // 0..100: große Formteile (2×2 Dreieck/Viertelkreis); 0 = aus
     colorCount: 0,            // 0 = alle erlaubten Farben, sonst die n passendsten
@@ -192,12 +194,13 @@ function drawCrop() {
   ctx.stroke();
 }
 
+let graphicMode = false; // zuletzt berechnet: Bild als flache Grafik behandelt
 const SUB = 4; // Teilpixel je Zelle und Richtung für halbe Noppen
 
 /** Liefert gemittelte Zellfarben und feinere Teilpixel (vor Helligkeit usw.). */
 function sampleImage() {
   const r = cropRect();
-  const key = [image.src, project.cols, project.rows, r.x, r.y, r.w, r.h, project.sharpen].join('|');
+  const key = [image.src, project.cols, project.rows, r.x, r.y, r.w, r.h, project.sharpen, project.imageKind].join('|');
   if (key === sampledKey && sampled) return sampled;
   const k = Math.max(SUB, Math.min(8, Math.floor(2048 / Math.max(project.cols, project.rows))));
   const w = project.cols * k, h = project.rows * k;
@@ -207,11 +210,14 @@ function sampleImage() {
   ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
   ctx.drawImage(image, r.x, r.y, r.w, r.h, 0, 0, w, h);
   const data = ctx.getImageData(0, 0, w, h).data;
-  const sharp = project.sharpen / 100;
-  unsharpMask(data, w, h, sharp * 1.5, Math.max(1, Math.round(k / 2)));
+  const flat = flatness(data, w, h); // vor dem Schärfen
+  const graphic = project.imageKind === 'graphic' || (project.imageKind === 'auto' && flat >= GRAPHIC_FLATNESS);
+  const sharp = graphic ? 0 : project.sharpen / 100; // Schärfen erzeugt an harten Grafikkanten Säume
+  if (sharp > 0) unsharpMask(data, w, h, sharp * 1.5, Math.max(1, Math.round(k / 2)));
   sampled = {
     cells: dominantDownsample(data, w, h, project.cols, project.rows, Math.min(1, 0.6 + sharp)),
     sub: boxDownsample(data, w, h, project.cols * SUB, project.rows * SUB),
+    graphic,
   };
   sampledKey = key;
   return sampled;
@@ -249,10 +255,11 @@ function regenerate() {
   const smp = sampleImage();
   const px = adjustPixels(Float32Array.from(smp.cells), project.adjust);
   const scale = sizeScale(cols, rows); // kleine Formate milder vereinfachen
+  graphicMode = smp.graphic;
   $('#small-hint').hidden = !(scale < 0.7 && project.crop.zoom < 1.5);
   const simp = project.simplify / 100;
   const weights = detailWeights(px, cols, rows); // vor dem Glätten: echte Detailkanten
-  smoothCells(px, cols, rows, simp * scale);
+  if (!graphicMode) smoothCells(px, cols, rows, simp * scale);
   if (project.colorCount > 0) {
     const pinned = new Set(idx.flatMap((ci, k) => (project.pinned.includes(LEGO_COLORS[ci].legoId) ? [k] : [])));
     idx = reducePalette(px, preparePalette(idx.map(i => LEGO_COLORS[i])), project.colorCount, pinned, weights).map(k => idx[k]);
@@ -260,8 +267,15 @@ function regenerate() {
   chosenColors = new Set(idx);
   const prepared = preparePalette(idx.map(i => LEGO_COLORS[i]));
   const sub = adjustPixels(Float32Array.from(smp.sub), project.adjust);
-  let grid, template = sub; // Vorlage für die Formteile: Foto oder Scherenschnitt
-  if (project.cutout > 0) {
+  let grid, template = sub, objectCells = null; // Vorlage für die Formteile: Foto oder Scherenschnitt
+  if (graphicMode) {
+    // Grafik: Mehrheit der exakten Farben je Noppe, kein Glätten, kein Scherenschnitt
+    // Objekte (Knöpfe, Symbole …) ans Noppenraster einrasten, dann Mehrheit je Noppe
+    const snap = snapObjects(graphicSub(sub, cols * SUB, rows * SUB, idx, prepared), cols * SUB, rows * SUB, SUB);
+    grid = cellsFromCutout(snap.g, cols, rows, SUB);
+    template = cutoutRgb(snap.g);
+    objectCells = snap.cells;
+  } else if (project.cutout > 0) {
     const g = cutout(sub, cols * SUB, rows * SUB, idx, prepared, project.cutout, scale);
     grid = cellsFromCutout(g, cols, rows, SUB);
     template = cutoutRgb(g);
@@ -273,16 +287,20 @@ function regenerate() {
   segmentation = segment(px, cols, rows, project.regionDetail);
   const ops = project.regionOps.map(o => ({ ...o, color: o.colorId != null ? indexByLegoId.get(o.colorId) : null }));
   const { hidden, levels } = applyRegionOps(grid, cols, rows, segmentation, ops);
-  const shapes = autoShapes(grid, cols, rows, { area: project.part, edge: project.edgePart, sensitivity: project.edgeSensitivity }, px);
+  // Grafik: Konturen im selben Stein wie die Fläche, sonst zeichnen die Konturfliesen Rahmen, die es im Bild nicht gibt
+  const shapes = autoShapes(grid, cols, rows, { area: project.part, edge: graphicMode ? project.part : project.edgePart, sensitivity: project.edgeSensitivity }, px);
   // Formteile: erst die großen (2×2), dann die kleinen (1×1) in den übrigen Zellen
   // Auf kleinen Formaten (unter ≈ 1400 Noppen, z. B. A4) sind 2×2-Formteile im Verhältnis riesig
   // und zerhacken Gesichter und Schrift – dort nur 1×1-Formteile.
-  const bigStrength = scale >= 0.6 ? project.bigPieces : 0;
+  // Grafik: Formteile nur auf eingerasteten Objekten (dort trifft die Vorlage die Form genau);
+  // anderswo würden sie rechte Winkel zu Klecksen runden.
+  const bigStrength = !graphicMode && scale >= 0.6 ? project.bigPieces : 0;
   const smallStrength = project.relief;
-  const { overlay, overlayColor } = fitBigPieces(template, grid, cols, rows, SUB, bigStrength, hidden);
+  const noPieces = graphicMode ? Uint8Array.from(hidden, (h, i) => (h || !objectCells[i] ? 1 : 0)) : hidden;
+  const { overlay, overlayColor } = fitBigPieces(template, grid, cols, rows, SUB, bigStrength, noPieces);
   if (smallStrength > 0) {
-    const blocked = Uint8Array.from(overlay, (v, i) => (v || hidden[i] ? 1 : 0));
-    const small = computeOverlays(template, grid, cols, rows, SUB, smallStrength, blocked);
+    const blocked = Uint8Array.from(overlay, (v, i) => (v || noPieces[i] ? 1 : 0));
+    const small = computeOverlays(template, grid, cols, rows, SUB, smallStrength, blocked, graphicMode ? { keep: 0.3 } : {});
     for (let i = 0; i < overlay.length; i++) if (small.overlay[i]) { overlay[i] = small.overlay[i]; overlayColor[i] = small.overlayColor[i]; }
   }
   for (let i = 0; i < overlay.length; i++) if (overlay[i]) shapes[i] = SHAPE_PLATE;
@@ -323,7 +341,7 @@ function updateDesignView() {
   $('#design-stats').textContent =
     `${project.cols} × ${project.rows} Noppen · ${(project.cols * STUD_MM / 10).toFixed(1)} × ${(project.rows * STUD_MM / 10).toFixed(1)} cm · ` +
     `${els.length} Teile` + (longs ? ` (davon ${longs} lange Fliesen)` : '') + (halves ? ` · ${halves} Formteile` : '') +
-    ` · ${used} Farben · Unterbau aus ${plates} Platten` +
+    ` · ${used} Farben · Unterbau aus ${plates} Platten` + (graphicMode ? ' · als Grafik gerastert' : '') +
     (risers.length ? ` · ${levels} ${levels === 1 ? 'Ebene' : 'Ebenen'} aus ${risers.length} Sockelplatten` : '');
 }
 
@@ -532,6 +550,7 @@ function syncControls() {
   $('#project-title').value = project.title;
   syncSizeControls();
   $('#part-select').value = project.part;
+  $('#image-kind').value = project.imageKind;
   $('#edge-select').value = project.edgePart;
   $('#edge-sens').value = project.edgeSensitivity; $('#out-edge').textContent = project.edgeSensitivity;
   $('#edge-sens-wrap').hidden = project.edgePart === 'same' || project.edgePart === project.part;
@@ -618,6 +637,7 @@ function initDesign() {
   $('#adj-relief').addEventListener('input', e => { project.relief = +e.target.value; $('#out-relief').textContent = e.target.value; regenerateSoon(); });
   $('#adj-sharpen').addEventListener('input', e => { project.sharpen = +e.target.value; $('#out-sharpen').textContent = e.target.value; regenerateSoon(); });
   $('#adj-simplify').addEventListener('input', e => { project.simplify = +e.target.value; $('#out-simplify').textContent = e.target.value; regenerateSoon(); });
+  $('#image-kind').addEventListener('change', e => { project.imageKind = e.target.value; regenerate(); });
   $('#adj-cutout').addEventListener('input', e => { project.cutout = +e.target.value; $('#out-cutout').textContent = e.target.value; regenerateSoon(); });
   $('#adj-big').addEventListener('input', e => { project.bigPieces = +e.target.value; $('#out-big').textContent = e.target.value; regenerateSoon(); });
   $('#adj-detail').addEventListener('input', e => {
