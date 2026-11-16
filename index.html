@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Mosaik-Studio – LEGO-Plakate aus Fotos</title>
+  <meta name="description" content="Erstelle aus Fotos Mosaik-Plakate mit echten LEGO-Steinen und -Farben – mit Editor, Bestellliste und Bauanleitung.">
+  <meta name="theme-color" content="#d01012">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="css/style.css">
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand"><img src="icons/icon.svg" alt="" width="32" height="32"><span>Mosaik-Studio</span></div>
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-tab="design" aria-selected="true">1 · Entwurf</button>
+      <button role="tab" data-tab="edit">2 · Bearbeiten</button>
+      <button role="tab" data-tab="order">3 · Bestellliste</button>
+      <button role="tab" data-tab="guide">4 · Anleitung</button>
+    </nav>
+    <div class="header-actions">
+      <button id="btn-install" class="btn small" hidden>App installieren</button>
+      <details class="menu">
+        <summary class="btn small" aria-label="Projektmenü">Projekt ▾</summary>
+        <div class="menu-body">
+          <label class="field"><span>Titel</span><input id="project-title" type="text" maxlength="60"></label>
+          <button id="btn-export" class="btn">Projekt speichern (.json)</button>
+          <label class="btn file-btn">Projekt öffnen…<input id="input-import" type="file" accept=".json,application/json" hidden></label>
+          <button id="btn-new" class="btn danger">Neues Projekt</button>
+        </div>
+      </details>
+    </div>
+  </header>
+
+  <main>
+    <!-- ENTWURF -->
+    <section id="tab-design" class="tab-panel" role="tabpanel">
+      <div class="layout">
+        <aside class="controls">
+          <fieldset>
+            <legend>Foto</legend>
+            <label id="drop-zone" class="drop-zone">
+              <input id="input-photo" type="file" accept="image/*" hidden>
+              <span>Foto wählen oder hierher ziehen</span>
+            </label>
+            <div id="crop-wrap" class="crop-wrap" hidden>
+              <canvas id="crop-canvas" aria-label="Bildausschnitt – zum Verschieben ziehen"></canvas>
+              <p class="hint">Ausschnitt durch Ziehen verschieben.</p>
+              <label class="field range"><span>Zoom</span><input id="crop-zoom" type="range" min="1" max="4" step="0.01" value="1"></label>
+            </div>
+          </fieldset>
+
+          <div id="design-lock" class="lock-banner" hidden>
+            <p>Du hast Steine von Hand gesetzt. Der Entwurf ist gesperrt, damit nichts überschrieben wird.</p>
+            <button id="btn-unlock" class="btn danger small">Entsperren &amp; neu berechnen</button>
+          </div>
+
+          <fieldset id="design-settings">
+            <legend>Größe &amp; Steine</legend>
+            <label class="field"><span>Format</span>
+              <select id="size-preset">
+                <optgroup id="paper-formats" label="Papierformat (1 Noppe = 8 mm)"></optgroup>
+                <optgroup label="Raster aus 16er-Abschnitten">
+                  <option value="3x3">48 × 48 Noppen (38 × 38 cm)</option>
+                  <option value="4x3">64 × 48 Noppen (51 × 38 cm), quer</option>
+                  <option value="3x4">48 × 64 Noppen (38 × 51 cm), hoch</option>
+                  <option value="4x4">64 × 64 Noppen (51 × 51 cm)</option>
+                  <option value="6x6">96 × 96 Noppen (77 × 77 cm)</option>
+                </optgroup>
+                <option value="custom">Eigenes Format (Noppen)…</option>
+              </select>
+            </label>
+            <div id="orient-row" class="row">
+              <label class="check"><input type="radio" name="orient" value="portrait" checked> Hochformat</label>
+              <label class="check"><input type="radio" name="orient" value="landscape"> Querformat</label>
+            </div>
+            <div id="custom-size" class="row" hidden>
+              <label class="field"><span>Breite (Noppen)</span><input id="size-w" type="number" min="8" max="160" value="37"></label>
+              <label class="field"><span>Höhe (Noppen)</span><input id="size-h" type="number" min="8" max="160" value="52"></label>
+            </div>
+            <p class="hint">Der Unterbau aus LEGO-Platten wird automatisch passend zur Größe geplant.</p>
+          </fieldset>
+
+          <fieldset id="design-pieces">
+            <legend>Steine &amp; Konturen</legend>
+            <label class="field"><span>Steintyp Flächen</span><select id="part-select"></select></label>
+            <label class="field"><span>Steintyp Konturen</span><select id="edge-select"></select></label>
+            <label class="field range" id="edge-sens-wrap"><span>Konturen erkennen <output id="out-edge">50</output></span><input id="edge-sens" type="range" min="0" max="100" value="50"></label>
+            <label class="check"><input id="chk-long" type="checkbox" checked> Eckige Fliesen zu 1×2 bis 1×4 zusammenfassen</label>
+            <label class="field range"><span>Halbe Noppen <output id="out-relief">0</output></span><input id="adj-relief" type="range" min="0" max="100" value="0"></label>
+            <p class="hint">Halbe Noppen: Viertel- und Halbkreis-Fliesen auf einer 1×1-Platte glätten schräge und runde Kanten. Sie stehen eine Plattenhöhe höher (Relief).</p>
+          </fieldset>
+
+          <fieldset id="design-adjust">
+            <legend>Bild anpassen</legend>
+            <label class="field range"><span>Helligkeit <output id="out-brightness">0</output></span><input id="adj-brightness" type="range" min="-60" max="60" value="0"></label>
+            <label class="field range"><span>Kontrast <output id="out-contrast">0</output></span><input id="adj-contrast" type="range" min="-60" max="60" value="0"></label>
+            <label class="field range"><span>Sättigung <output id="out-saturation">0</output></span><input id="adj-saturation" type="range" min="-100" max="100" value="0"></label>
+            <label class="field range"><span>Dithering <output id="out-dither">0</output></span><input id="adj-dither" type="range" min="0" max="100" value="0"></label>
+            <label class="field range"><span>Schärfen <output id="out-sharpen">30</output></span><input id="adj-sharpen" type="range" min="0" max="100" value="30"></label>
+            <label class="check"><input id="chk-despeckle" type="checkbox"> Einzelne Ausreißer-Steine entfernen</label>
+          </fieldset>
+
+          <fieldset id="design-palette">
+            <legend>LEGO-Farben</legend>
+            <label class="field"><span>Auswahl</span><select id="palette-preset"></select></label>
+            <div id="palette-chips" class="chips" aria-label="Farben ein/aus"></div>
+            <p class="hint"><span id="palette-count"></span> Farben aktiv. Antippen schaltet eine Farbe ein oder aus.</p>
+          </fieldset>
+        </aside>
+
+        <div class="stage">
+          <div id="design-empty" class="empty">
+            <h2>LEGO-Plakat aus einem Foto</h2>
+            <p>Wähle links ein Foto. Das Mosaik verwendet nur echte LEGO-Teile und offizielle LEGO-Farben.</p>
+          </div>
+          <canvas id="preview-canvas" hidden></canvas>
+          <p id="design-stats" class="stats"></p>
+          <div class="stage-actions"><button id="btn-to-edit" class="btn primary" disabled>Weiter zum Bearbeiten →</button></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- BEARBEITEN -->
+    <section id="tab-edit" class="tab-panel" role="tabpanel" hidden>
+      <div class="toolbar">
+        <div class="tool-group" role="group" aria-label="Werkzeug">
+          <button class="btn tool" data-tool="brush" aria-pressed="true" title="Pinsel (B)">✏️ Setzen</button>
+          <button class="btn tool" data-tool="fill" aria-pressed="false" title="Fläche füllen (F)">🪣 Füllen</button>
+          <button class="btn tool" data-tool="pick" aria-pressed="false" title="Farbe aufnehmen (I)">💧 Pipette</button>
+          <button class="btn tool" data-tool="shape" aria-pressed="false" title="Steinform setzen (S)">🔶 Form</button>
+          <button class="btn tool" data-tool="half" aria-pressed="false" title="Halbe Noppe setzen (H), erneut klicken dreht (R)">🌓 Halbe Noppe</button>
+          <button class="btn tool" data-tool="pan" aria-pressed="false" title="Verschieben (Leertaste)">✋ Verschieben</button>
+        </div>
+        <div class="tool-group">
+          <button id="btn-undo" class="btn" title="Rückgängig (Strg+Z)">↶</button>
+          <button id="btn-redo" class="btn" title="Wiederholen (Strg+Y)">↷</button>
+        </div>
+        <div class="tool-group">
+          <button id="btn-zoom-out" class="btn" title="Verkleinern">−</button>
+          <span id="zoom-label" class="zoom-label">100 %</span>
+          <button id="btn-zoom-in" class="btn" title="Vergrößern">+</button>
+          <label class="check"><input id="chk-grid" type="checkbox" checked> Raster</label>
+        </div>
+        <div class="tool-group" id="shape-opts" hidden>
+          <select id="shape-select" aria-label="Steinform"></select>
+        </div>
+        <div class="tool-group" id="half-opts" hidden>
+          <select id="half-kind" aria-label="Art der halben Noppe">
+            <option value="0">Viertelkreis</option>
+            <option value="1">Halbkreis</option>
+            <option value="-1">Entfernen</option>
+          </select>
+          <button id="btn-rotate" class="btn" title="Drehen (R)">⟳ <svg id="half-preview" viewBox="0 0 1 1" width="16" height="16"><rect width="1" height="1" fill="#ccc"/><path fill="currentColor"/></svg></button>
+        </div>
+        <div class="current-color"><span id="current-swatch" class="swatch"></span><span id="current-name"></span></div>
+        <span id="cursor-pos" class="cursor-pos"></span>
+      </div>
+      <div class="edit-layout">
+        <div id="editor-viewport" class="editor-viewport">
+          <div class="empty" id="edit-empty"><p>Erstelle zuerst im Entwurf ein Mosaik.</p></div>
+          <canvas id="editor-canvas"></canvas>
+        </div>
+        <aside class="edit-palette">
+          <h3>Verwendete Farben</h3>
+          <div id="used-colors" class="color-list"></div>
+          <h3>Alle LEGO-Farben</h3>
+          <div id="all-colors" class="color-list compact"></div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- BESTELLLISTE -->
+    <section id="tab-order" class="tab-panel" role="tabpanel" hidden>
+      <div class="order-head">
+        <div class="row wrap">
+          <label class="field"><span>Reserve</span>
+            <select id="spare-select">
+              <option value="0">keine</option>
+              <option value="3">+3 %</option>
+              <option value="5">+5 %</option>
+              <option value="10">+10 %</option>
+            </select>
+          </label>
+          <label class="check"><input id="chk-base" type="checkbox" checked> Unterbau (LEGO-Platten) mitbestellen</label>
+          <label class="field"><span>Farbe Unterbau</span><select id="base-color"></select></label>
+        </div>
+        <div class="row wrap">
+          <button id="btn-csv" class="btn">CSV herunterladen</button>
+          <button id="btn-bricklink" class="btn">BrickLink Wanted List (XML)</button>
+          <button id="btn-copy-xml" class="btn">XML kopieren</button>
+          <button id="btn-print-order" class="btn">Drucken</button>
+        </div>
+      </div>
+      <div id="order-content"></div>
+      <details class="info">
+        <summary>So bestellst du</summary>
+        <ul>
+          <li><strong>BrickLink:</strong> „Want“ → „Upload“ → XML einfügen. Danach mit „Easy Buy“ Händler finden.</li>
+          <li><strong>LEGO Pick a Brick:</strong> Nach der LEGO-Design-ID und dem offiziellen LEGO-Farbnamen suchen (beides in der Liste und im CSV).</li>
+          <li>Nicht jedes Teil ist in jeder Farbe zu haben. Prüfe vor der Bestellung, ob es das Teil in der Farbe gibt, und tausche notfalls Farbe oder Steintyp.</li>
+        </ul>
+      </details>
+    </section>
+
+    <!-- ANLEITUNG -->
+    <section id="tab-guide" class="tab-panel" role="tabpanel" hidden>
+      <div class="guide-actions no-print">
+        <button id="btn-print-guide" class="btn primary">Anleitung drucken / als PDF speichern</button>
+        <span class="hint">Eine Seite pro 16×16-Abschnitt</span>
+      </div>
+      <div id="guide-content" class="guide"></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
