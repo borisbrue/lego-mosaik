@@ -3,6 +3,7 @@ import { SECTION as SEC, STUD_MM } from './parts.js';
 import { hexToRgb } from './mosaic.js';
 import { planSubstructure } from './substructure.js';
 import { buildElements, countParts, overlayPath, overlayLabelPoints } from './pieces.js';
+import { planRisers, countRisers, MAX_LEVEL } from './layers.js';
 
 export function textColorFor(hex) {
   const [r, g, b] = hexToRgb(hex);
@@ -82,11 +83,42 @@ function sectionSvg(project, sx, sy, legend, elements) {
   s += `<rect x="${pad}" y="${pad}" width="${w * cell}" height="${h * cell}" fill="#fafafa"/>`;
   const baseColorOf = e => grid[e.y * cols + e.x];
   for (const e of elements) s += elementSvg(e, pad - x0 * cell, pad - y0 * cell, cell, legend, baseColorOf);
+  if (project.height) s += reliefMarks(project, x0, y0, w, h, cell, pad);
   // Hilfslinien alle 4 Noppen
   for (let i = 4; i < w; i += 4) s += `<line x1="${pad + i * cell}" y1="${pad}" x2="${pad + i * cell}" y2="${pad + h * cell}" stroke="#000" stroke-width="0.8"/>`;
   for (let j = 4; j < h; j += 4) s += `<line x1="${pad}" y1="${pad + j * cell}" x2="${pad + w * cell}" y2="${pad + j * cell}" stroke="#000" stroke-width="0.8"/>`;
   s += `<rect x="${pad}" y="${pad}" width="${w * cell}" height="${h * cell}" fill="none" stroke="#000" stroke-width="1.2"/>`;
   return s + '</svg>';
+}
+
+/** Violette Umrisse erhöhter Bereiche und „+k“ je zusammenhängender Stufe im Abschnitt. */
+function reliefMarks(project, x0, y0, w, h, cell, pad) {
+  const { cols, rows, height } = project;
+  const H = (x, y) => (x < 0 || y < 0 || x >= cols || y >= rows ? 0 : height[y * cols + x]);
+  let lines = '', labels = '';
+  for (let y = y0; y < y0 + h; y++) for (let x = x0; x < x0 + w; x++) {
+    const v = H(x, y), X = pad + (x - x0) * cell, Y = pad + (y - y0) * cell;
+    if (v !== H(x + 1, y) && (v || H(x + 1, y)) && x + 1 < x0 + w) lines += `M${X + cell} ${Y}v${cell}`;
+    if (v !== H(x, y + 1) && (v || H(x, y + 1)) && y + 1 < y0 + h) lines += `M${X} ${Y + cell}h${cell}`;
+  }
+  // Beschriftung: erste Zelle jeder Stufen-Fläche innerhalb des Abschnitts
+  const seen = new Uint8Array(w * h);
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    const v = H(x0 + i, y0 + j);
+    if (!v || seen[j * w + i]) continue;
+    const stack = [j * w + i]; seen[j * w + i] = 1;
+    while (stack.length) {
+      const k = stack.pop(), ki = k % w, kj = (k / w) | 0;
+      for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const ni = ki + di, nj = kj + dj;
+        if (ni < 0 || nj < 0 || ni >= w || nj >= h || seen[nj * w + ni] || H(x0 + ni, y0 + nj) !== v) continue;
+        seen[nj * w + ni] = 1; stack.push(nj * w + ni);
+      }
+    }
+    const X = pad + i * cell, Y = pad + j * cell;
+    labels += `<g><rect x="${X + 0.3}" y="${Y + 0.3}" width="4.6" height="3" rx="0.7" fill="#7b2fbe"/><text x="${X + 2.6}" y="${Y + 1.85}" font-size="2.5" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-weight="bold" fill="#fff">+${v}</text></g>`;
+  }
+  return (lines ? `<path d="${lines}" fill="none" stroke="#7b2fbe" stroke-width="1.6" stroke-linecap="round"/>` : '') + labels;
 }
 
 /** Kleines Symbol je Teil für die Teile-Legende. */
@@ -109,14 +141,16 @@ function partsList(elements, legend) {
 function layerSvg(cols, rows, plates, under = []) {
   const cell = 10, pad = 14;
   const W = cols * cell + pad, H = rows * cell + pad;
-  let s = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" class="layer-svg">`;
+  let s = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" class="layer-svg">`
+    + `<rect x="${pad}" y="${pad}" width="${cols * cell}" height="${rows * cell}" fill="#fcfcfc" stroke="#999" stroke-width="0.8"/>`;
   for (let i = 0; i < cols; i += 4) s += `<text x="${pad + i * cell + cell / 2}" y="${pad - 4}" font-size="6" text-anchor="middle" font-family="sans-serif" fill="#555">${i + 1}</text>`;
   for (let j = 0; j < rows; j += 4) s += `<text x="${pad - 3}" y="${pad + j * cell + cell / 2}" font-size="6" text-anchor="end" dominant-baseline="central" font-family="sans-serif" fill="#555">${j + 1}</text>`;
   plates.forEach((p, n) => {
     const x = pad + p.x * cell, y = pad + p.y * cell, w = p.w * cell, h = p.h * cell;
     const fs = Math.max(5, Math.min(18, Math.min(w, h) * 0.38, w / 4.2));
-    s += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${n % 2 ? '#e4e8ee' : '#f4f6f8'}" stroke="#000" stroke-width="1.6"/>`;
-    s += `<text x="${x + w / 2}" y="${y + h / 2}" font-size="${fs}" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-weight="bold" fill="#222">${p.w}×${p.h}</text>`;
+    const hex = p.colorIndex !== undefined ? LEGO_COLORS[p.colorIndex].hex : null;
+    s += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${hex || (n % 2 ? '#e4e8ee' : '#f4f6f8')}" stroke="#000" stroke-width="1.6"/>`;
+    s += `<text x="${x + w / 2}" y="${y + h / 2}" font-size="${fs}" text-anchor="middle" dominant-baseline="central" font-family="sans-serif" font-weight="bold" fill="${hex ? textColorFor(hex) : '#222'}">${p.w}×${p.h}</text>`;
   });
   if (under.length) {
     s += `<g fill="none" stroke="#d01012" stroke-width="1" stroke-dasharray="4 3">`;
@@ -139,6 +173,18 @@ function layerPage(title, intro, cols, rows, plates, under) {
   </section>`;
 }
 
+function riserPage(level, cols, rows, risers) {
+  const mine = risers.filter(r => r.level === level), under = risers.filter(r => r.level === level - 1);
+  const list = countRisers(mine).map(({ part, colorIndex, count }) =>
+    `<li><span class="swatch" style="background:${LEGO_COLORS[colorIndex].hex}"></span> <strong>${count}×</strong> ${esc(part.label)} <small>${esc(LEGO_COLORS[colorIndex].de)} · BL ${esc(part.blId)}</small></li>`).join('');
+  return `<section class="page layer-page">
+    <h2>Ebene +${level} · Sockel</h2>
+    <p class="meta">${mine.length} Platten, von oben gesehen. Sie kommen auf ${level === 1 ? 'den Unterbau' : `die Sockel von Ebene +${level - 1}`}${under.length ? ' (rot gestrichelt)' : ''}. Auf die oberste Ebene setzt du später die Mosaiksteine.</p>
+    <div class="layer-grid">${layerSvg(cols, rows, mine, under)}</div>
+    <ul class="section-parts">${list}</ul>
+  </section>`;
+}
+
 function chip(entry) {
   const c = entry.color;
   return `<span class="chip" style="background:${c.hex};color:${textColorFor(c.hex)}">${entry.symbol}</span>`;
@@ -152,6 +198,8 @@ export function buildInstructionsHtml(project, title = 'Mein LEGO-Mosaik') {
   const nsx = Math.ceil(cols / SEC), nsy = Math.ceil(rows / SEC);
   const sub = planSubstructure(cols, rows);
   const overlays = elements.filter(e => e.kind === 'overlay').length;
+  const risers = planRisers(project);
+  const levels = risers.length ? Math.max(...risers.map(r => r.level)) : 0;
 
   // Teile-Legende: ein Beispiel je Teilart
   const kinds = new Map();
@@ -163,7 +211,7 @@ export function buildInstructionsHtml(project, title = 'Mein LEGO-Mosaik') {
 
   let html = `<section class="page cover">
     <h1>${esc(title)}</h1>
-    <p class="meta">${cols} × ${rows} Noppen · ${(cols * STUD_MM / 10).toFixed(1)} × ${(rows * STUD_MM / 10).toFixed(1)} cm · ${elements.length} Mosaikteile · Unterbau aus ${sub.total} Platten</p>
+    <p class="meta">${cols} × ${rows} Noppen · ${(cols * STUD_MM / 10).toFixed(1)} × ${(rows * STUD_MM / 10).toFixed(1)} cm · ${elements.length} Mosaikteile · Unterbau aus ${sub.total} Platten${risers.length ? ` · ${levels} ${levels === 1 ? 'Ebene' : 'Ebenen'} aus ${risers.length} Sockelplatten` : ''}</p>
     <div class="cover-preview">${previewSvg(project, { cell: 6 })}</div>
     <h2>Farblegende</h2>
     <table class="legend"><thead><tr><th>Nr.</th><th>Farbe</th><th>LEGO-Farbe (ID)</th><th>BrickLink-Farbe (ID)</th><th>Teile</th></tr></thead><tbody>
@@ -175,6 +223,7 @@ export function buildInstructionsHtml(project, title = 'Mein LEGO-Mosaik') {
     <ol class="howto">
       <li><strong>Unterbau, Lage 1:</strong> Lege die ${sub.bottom.length} Platten der unteren Lage mit den Noppen nach oben wie im Plan aus.</li>
       <li><strong>Unterbau, Lage 2:</strong> Setze die ${sub.top.length} Platten der oberen Lage darauf und drücke sie gut fest. Die Fugen der beiden Lagen liegen versetzt, so hält der Unterbau als eine Fläche zusammen.</li>
+      ${levels ? `<li><strong>Ebenen:</strong> Setze die Sockelplatten nach den Plänen „Ebene +1“${levels > 1 ? ` bis „Ebene +${levels}“` : ''} auf den Unterbau, jede Ebene auf die vorige. In den Abschnitten sind erhöhte Bereiche violett umrandet; das Schild <strong>+1</strong>, <strong>+2</strong> … sagt, auf welcher Ebene die Steine dort sitzen.</li>` : ''}
       <li><strong>Mosaik:</strong> Baue die ${nsx * nsy} Abschnitte (je ${SEC}×${SEC} Noppen) nacheinander auf den Unterbau. Nummer 1 ist oben links, es geht zeilenweise nach rechts. Jedes Feld zeigt die Farbnummer aus der Legende und die Form des Teils: Kreis = rund, Quadrat = eckig, Ring = mit Noppe, ohne Ring = glatte Fliese. Längliche Felder sind 1×2- bis 1×4-Fliesen. Spalten stehen oben, Zeilen links, dicke Linien teilen das Raster in 4×4-Blöcke.</li>
       ${overlays ? `<li><strong>Halbe Noppen (${overlays}×):</strong> Felder mit Viertel- oder Halbkreis bekommen zuerst eine eckige Platte 1×1 in der Farbe der kleinen Zahl, darauf die Fliese in der Farbe der großen Zahl, genau so gedreht wie gezeichnet. Diese Teile stehen eine Plattenhöhe über den anderen.</li>` : ''}
     </ol>
@@ -186,6 +235,7 @@ export function buildInstructionsHtml(project, title = 'Mein LEGO-Mosaik') {
   html += layerPage('Unterbau · Lage 2 (oben)',
     `${sub.top.length} Platten, kommen auf Lage 1. Auf diese Lage setzt du die Mosaiksteine.`,
     cols, rows, sub.top);
+  for (let l = 1; l <= Math.min(levels, MAX_LEVEL); l++) html += riserPage(l, cols, rows, risers);
 
   for (let sy = 0; sy < nsy; sy++) for (let sx = 0; sx < nsx; sx++) {
     const n = sy * nsx + sx + 1;

@@ -1,10 +1,10 @@
 // Service Worker: App-Shell offline verfügbar machen.
-const VERSION = 'v4';
+const VERSION = 'v5';
 const CACHE = `mosaik-studio-${VERSION}`;
 const ASSETS = [
   './', 'index.html', 'manifest.webmanifest', 'css/style.css',
   'js/app.js', 'js/colors.js', 'js/parts.js', 'js/mosaic.js', 'js/render.js', 'js/editor.js',
-  'js/orderlist.js', 'js/instructions.js', 'js/storage.js', 'js/substructure.js', 'js/pieces.js',
+  'js/orderlist.js', 'js/instructions.js', 'js/storage.js', 'js/substructure.js', 'js/pieces.js', 'js/layers.js',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png',
 ];
 

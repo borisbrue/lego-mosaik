@@ -81,6 +81,31 @@ export function renderMosaic(ctx, p, cell) {
     else if (e.kind === 'long') drawLong(ctx, x, y, e.w, e.h, cell, hex);
     else drawOverlay(ctx, x, y, cell, hex, e.code);
   }
+  if (p.height) drawRelief(ctx, p, cell);
+}
+
+/**
+ * Ebenen sichtbar machen: Licht von oben links. Eine höhere Zelle wirft Schatten auf die
+ * tiefere Nachbarzelle rechts/unten; an der Kante oben/links bekommt sie eine Lichtkante.
+ */
+export function drawRelief(ctx, p, cell) {
+  const { cols, rows, height } = p;
+  if (!height.some(Boolean)) return;
+  ctx.save();
+  for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+    const i = y * cols + x, h = height[i];
+    if (!h) continue;
+    const X = x * cell, Y = y * cell;
+    const lower = (nx, ny) => nx >= 0 && ny >= 0 && nx < cols && ny < rows ? h - height[ny * cols + nx] : 0;
+    const dr = lower(x + 1, y), db = lower(x, y + 1), dl = lower(x - 1, y), dt = lower(x, y - 1);
+    if (dr > 0) { const w = cell * Math.min(0.6, 0.22 * dr); const g = ctx.createLinearGradient(X + cell, 0, X + cell + w, 0); g.addColorStop(0, 'rgba(0,0,0,.55)'); g.addColorStop(1, 'rgba(0,0,0,0)'); ctx.fillStyle = g; ctx.fillRect(X + cell, Y, w, cell); }
+    if (db > 0) { const w = cell * Math.min(0.6, 0.22 * db); const g = ctx.createLinearGradient(0, Y + cell, 0, Y + cell + w); g.addColorStop(0, 'rgba(0,0,0,.55)'); g.addColorStop(1, 'rgba(0,0,0,0)'); ctx.fillStyle = g; ctx.fillRect(X, Y + cell, cell, w); }
+    const lw = Math.max(1, cell * 0.12);
+    ctx.fillStyle = 'rgba(255,255,255,.6)';
+    if (dl > 0) ctx.fillRect(X, Y, lw, cell);
+    if (dt > 0) ctx.fillRect(X, Y, cell, lw);
+  }
+  ctx.restore();
 }
 
 export function drawSectionLines(ctx, cols, rows, cell, every = 16) {

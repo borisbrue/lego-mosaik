@@ -94,6 +94,12 @@
             <p class="hint">Halbe Noppen: Viertel- und Halbkreis-Fliesen auf einer 1×1-Platte glätten schräge und runde Kanten. Sie stehen eine Plattenhöhe höher (Relief).</p>
           </fieldset>
 
+          <fieldset id="design-layers">
+            <legend>Ebenen (Relief)</legend>
+            <label class="field range"><span>Tiefe automatisch <output id="out-depth">0</output></span><input id="adj-depth" type="range" min="0" max="100" value="0"></label>
+            <p class="hint">Was sich farblich vom Hintergrund abhebt, kommt 1–3 Plattenhöhen nach vorne. Der Schatten an der Stufe zeichnet den Umriss nach. Im Editor kannst du Ebenen mit dem Werkzeug „Ebene“ selbst malen.</p>
+          </fieldset>
+
           <fieldset id="design-adjust">
             <legend>Bild anpassen</legend>
             <label class="field range"><span>Helligkeit <output id="out-brightness">0</output></span><input id="adj-brightness" type="range" min="-60" max="60" value="0"></label>
@@ -133,6 +139,7 @@
           <button class="btn tool" data-tool="pick" aria-pressed="false" title="Farbe aufnehmen (I)">💧 Pipette</button>
           <button class="btn tool" data-tool="shape" aria-pressed="false" title="Steinform setzen (S)">🔶 Form</button>
           <button class="btn tool" data-tool="half" aria-pressed="false" title="Halbe Noppe setzen (H), erneut klicken dreht (R)">🌓 Halbe Noppe</button>
+          <button class="btn tool" data-tool="level" aria-pressed="false" title="Ebene malen (L)">⛰️ Ebene</button>
           <button class="btn tool" data-tool="pan" aria-pressed="false" title="Verschieben (Leertaste)">✋ Verschieben</button>
         </div>
         <div class="tool-group">
@@ -147,6 +154,14 @@
         </div>
         <div class="tool-group" id="shape-opts" hidden>
           <select id="shape-select" aria-label="Steinform"></select>
+        </div>
+        <div class="tool-group" id="level-opts" hidden>
+          <select id="level-select" aria-label="Ebene">
+            <option value="0">Ebene 0 (flach)</option>
+            <option value="1" selected>Ebene +1</option>
+            <option value="2">Ebene +2</option>
+            <option value="3">Ebene +3</option>
+          </select>
         </div>
         <div class="tool-group" id="half-opts" hidden>
           <select id="half-kind" aria-label="Art der halben Noppe">
@@ -187,6 +202,7 @@
           </label>
           <label class="check"><input id="chk-base" type="checkbox" checked> Unterbau (LEGO-Platten) mitbestellen</label>
           <label class="field"><span>Farbe Unterbau</span><select id="base-color"></select></label>
+          <label class="field"><span>Farbe Sockel (Ebenen)</span><select id="riser-color"></select></label>
         </div>
         <div class="row wrap">
           <button id="btn-csv" class="btn">CSV herunterladen</button>

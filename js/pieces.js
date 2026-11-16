@@ -247,11 +247,13 @@ export function buildElements(project) {
   const { cols, rows, grid } = project;
   const shapes = project.shapes || new Uint8Array(cols * rows).fill(SHAPE_INDEX[project.part] ?? 0);
   const overlay = project.overlay, overlayColor = project.overlayColor;
+  const height = project.height;
+  const same = (i, j) => grid[j] === grid[i] && (!height || height[j] === height[i]); // gleiche Farbe und Ebene
   const els = [];
   const used = new Uint8Array(cols * rows);
   const mergeable = i => shapes[i] === SHAPE_TILE && !(overlay && overlay[i]);
   // Fliesen laufen entlang einer Kante: an einer reinen senkrechten Kante nicht waagrecht zusammenfassen
-  const diff = (i, j) => j >= 0 && j < grid.length && grid[j] !== grid[i];
+  const diff = (i, j) => j >= 0 && j < grid.length && !same(i, j);
   const vEdgeOnly = i => {
     const x = i % cols;
     const v = (x > 0 && diff(i, i - 1)) || (x < cols - 1 && diff(i, i + 1));
@@ -266,7 +268,7 @@ export function buildElements(project) {
         const i = y * cols + x;
         if (!hMergeable(i)) { x++; continue; }
         let L = 1;
-        while (x + L < end && hMergeable(i + L) && grid[i + L] === grid[i]) L++;
+        while (x + L < end && hMergeable(i + L) && same(i, i + L)) L++;
         if (L >= 2) {
           let px = x;
           for (const l of splitRun(L)) {
@@ -287,7 +289,7 @@ export function buildElements(project) {
         const i = y * cols + x;
         if (used[i] || !mergeable(i)) { y++; continue; }
         let L = 1;
-        while (y + L < end && !used[i + L * cols] && mergeable(i + L * cols) && grid[i + L * cols] === grid[i]) L++;
+        while (y + L < end && !used[i + L * cols] && mergeable(i + L * cols) && same(i, i + L * cols)) L++;
         if (L >= 2) {
           let py = y;
           for (const l of splitRun(L)) {

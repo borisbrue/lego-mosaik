@@ -11,6 +11,7 @@ export class Editor {
     this.onChange = onChange; this.onPick = onPick; this.onCursor = onCursor; this.onHistory = onHistory; this.onHalfRot = onHalfRot;
     this.project = null; this.color = 1; this.tool = 'brush'; this.showGrid = true;
     this.shape = 3;                      // Index in SHAPE_KEYS für das Werkzeug „Steinform“
+    this.level = 1;                      // Werkzeug „Ebene“: Zielstufe 0..3
     this.halfKind = 0; this.halfRot = 0; // Werkzeug „Halbe Noppe“: 0 Viertelkreis, 1 Halbkreis, -1 entfernen
     this.zoomIdx = 5; this.undoStack = []; this.redoStack = []; this.stroke = null; this.panStart = null;
     this.spaceDown = false;
@@ -46,6 +47,7 @@ export class Editor {
   setTool(tool) { this.tool = tool; this.viewport.classList.toggle('pan', tool === 'pan'); }
   setColor(ci) { this.color = ci; }
   setShape(si) { this.shape = si; }
+  setLevel(l) { this.level = l; }
   setHalf(kind, rot = this.halfRot) { this.halfKind = kind; this.halfRot = rot & 3; }
   setGrid(on) { this.showGrid = on; this.redrawAll(); }
 
@@ -133,7 +135,8 @@ export class Editor {
   }
 
   paint(cell) {
-    const f = this.tool === 'shape' ? 'shapes' : 'grid', to = f === 'shapes' ? this.shape : this.color;
+    const f = this.tool === 'shape' ? 'shapes' : this.tool === 'level' ? 'height' : 'grid';
+    const to = f === 'shapes' ? this.shape : f === 'height' ? this.level : this.color;
     const g = this.project[f];
     if (g[cell.i] === to) return;
     if (!this.stroke.changes.has(cell.i)) this.stroke.changes.set(cell.i, { i: cell.i, f, from: g[cell.i], to });

@@ -1,6 +1,7 @@
 import { LEGO_COLORS, PALETTE_PRESETS } from './colors.js';
 import { STUD_PARTS, STUD_MM, SECTION, PAPER_FORMATS, paperStuds, SHAPE_KEYS, SHAPE_INDEX, SHAPE_PLATE, overlayCode } from './parts.js';
 import { autoShapes, computeOverlays, simplify, buildElements, overlayPath } from './pieces.js';
+import { autoDepth, planRisers } from './layers.js';
 import { planSubstructure } from './substructure.js';
 import { boxDownsample, dominantDownsample, unsharpMask, smoothCells, adjustPixels, preparePalette, quantize, countColors } from './mosaic.js';
 import { renderMosaic, drawSectionLines } from './render.js';
@@ -25,6 +26,8 @@ function defaultProject() {
     longTiles: true,          // eckige Fliesen zu 1×2–1×4 zusammenfassen
     relief: 0,                // halbe Noppen: 0 = aus … 100 = viele
     sharpen: 30,              // 0..100
+    depth: 0,                 // 0..100: Ebenen automatisch vorschlagen
+    riserColorId: 26,         // Farbe der Sockelplatten unter erhöhten Bereichen ('match' = wie Oberfläche)
     simplify: 30,             // 0..100: Farbinseln verschmelzen, Flächen glätten
     crop: { zoom: 1, cx: 0.5, cy: 0.5 },
     adjust: { brightness: 0, contrast: 0, saturation: 0 },
@@ -38,6 +41,7 @@ function defaultProject() {
     shapes: null,        // Uint8Array: Index in SHAPE_KEYS je Zelle
     overlay: null,       // Uint8Array: halbe Noppe je Zelle (0 = keine, siehe overlayCode)
     overlayColor: null,  // Uint8Array: Farbindex der halben Noppe
+    height: null,        // Uint8Array: Ebene je Zelle (0 = flach … 3)
   };
 }
 
@@ -72,16 +76,18 @@ function serialize() {
     ...project, grid: toIds(project.grid), overlayColor: toIds(project.overlayColor),
     shapes: project.shapes ? Array.from(project.shapes) : null,
     overlay: project.overlay ? Array.from(project.overlay) : null,
+    height: project.height ? Array.from(project.height) : null,
   };
 }
 
 /** Sorgt dafür, dass Formen- und Overlay-Raster zur Größe passen (ältere Projekte). */
 function ensureLayers(p) {
   const n = p.cols * p.rows;
-  if (!p.grid) { p.shapes = p.overlay = p.overlayColor = null; return p; }
+  if (!p.grid) { p.shapes = p.overlay = p.overlayColor = p.height = null; return p; }
   if (!p.shapes || p.shapes.length !== n) p.shapes = new Uint8Array(n).fill(SHAPE_INDEX[p.part] ?? 0);
   if (!p.overlay || p.overlay.length !== n) p.overlay = new Uint8Array(n);
   if (!p.overlayColor || p.overlayColor.length !== n) p.overlayColor = new Uint8Array(n);
+  if (!p.height || p.height.length !== n) p.height = new Uint8Array(n);
   return p;
 }
 function deserialize(data) {
@@ -99,6 +105,7 @@ function deserialize(data) {
   p.overlayColor = fromIds(data.overlayColor, n);
   p.shapes = Array.isArray(data.shapes) && data.shapes.length === n ? Uint8Array.from(data.shapes) : null;
   p.overlay = Array.isArray(data.overlay) && data.overlay.length === n ? Uint8Array.from(data.overlay) : null;
+  p.height = Array.isArray(data.height) && data.height.length === n ? Uint8Array.from(data.height) : null;
   return ensureLayers(p);
 }
 const save = debounce(() => kvSet('project', serialize()).catch(console.error), 400);
@@ -224,7 +231,8 @@ function regenerate() {
     ({ overlay, overlayColor } = computeOverlays(sub, grid, cols, rows, SUB, project.relief));
     for (let i = 0; i < overlay.length; i++) if (overlay[i]) shapes[i] = SHAPE_PLATE;
   }
-  Object.assign(project, { grid, shapes, overlay, overlayColor });
+  const height = autoDepth(grid, cols, rows, project.depth, px);
+  Object.assign(project, { grid, shapes, overlay, overlayColor, height });
   updateDesignView();
   save();
 }
@@ -239,7 +247,7 @@ function updateDesignView() {
   $('#crop-wrap').hidden = !image;
   $('#drop-zone span').textContent = image ? 'Anderes Foto wählen' : 'Foto wählen oder hierher ziehen';
   $('#design-lock').hidden = !project.edited;
-  for (const id of ['#design-settings', '#design-pieces', '#design-adjust', '#design-palette']) $(id).disabled = project.edited;
+  for (const id of ['#design-settings', '#design-pieces', '#design-layers', '#design-adjust', '#design-palette']) $(id).disabled = project.edited;
   $('#crop-zoom').disabled = project.edited;
   if (!has) { $('#design-stats').textContent = ''; return; }
   const c = $('#preview-canvas');
@@ -252,10 +260,12 @@ function updateDesignView() {
   const used = new Set(els.map(e => e.colorIndex)).size;
   const longs = els.filter(e => e.kind === 'long').length, halves = els.filter(e => e.kind === 'overlay').length;
   const plates = planSubstructure(project.cols, project.rows).total;
+  const risers = planRisers(project), levels = project.height ? Math.max(0, ...project.height) : 0;
   $('#design-stats').textContent =
     `${project.cols} × ${project.rows} Noppen · ${(project.cols * STUD_MM / 10).toFixed(1)} × ${(project.rows * STUD_MM / 10).toFixed(1)} cm · ` +
     `${els.length} Teile` + (longs ? ` (davon ${longs} lange Fliesen)` : '') + (halves ? ` · ${halves} halbe Noppen` : '') +
-    ` · ${used} Farben · Unterbau aus ${plates} Platten`;
+    ` · ${used} Farben · Unterbau aus ${plates} Platten` +
+    (risers.length ? ` · ${levels} ${levels === 1 ? 'Ebene' : 'Ebenen'} aus ${risers.length} Sockelplatten` : '');
 }
 
 function setSize(cols, rows) {
@@ -321,6 +331,7 @@ function syncControls() {
   $('#adj-relief').value = project.relief; $('#out-relief').textContent = project.relief;
   $('#adj-sharpen').value = project.sharpen; $('#out-sharpen').textContent = project.sharpen;
   $('#adj-simplify').value = project.simplify; $('#out-simplify').textContent = project.simplify;
+  $('#adj-depth').value = project.depth; $('#out-depth').textContent = project.depth;
   for (const k of ['brightness', 'contrast', 'saturation']) {
     $(`#adj-${k}`).value = project.adjust[k]; $(`#out-${k}`).textContent = project.adjust[k];
   }
@@ -330,6 +341,7 @@ function syncControls() {
   $('#spare-select').value = project.sparePercent;
   $('#chk-base').checked = project.includeBase;
   $('#base-color').value = project.baseColorId;
+  $('#riser-color').value = project.riserColorId;
   renderPaletteChips();
 }
 
@@ -394,6 +406,7 @@ function initDesign() {
   $('#adj-relief').addEventListener('input', e => { project.relief = +e.target.value; $('#out-relief').textContent = e.target.value; regenerateSoon(); });
   $('#adj-sharpen').addEventListener('input', e => { project.sharpen = +e.target.value; $('#out-sharpen').textContent = e.target.value; regenerateSoon(); });
   $('#adj-simplify').addEventListener('input', e => { project.simplify = +e.target.value; $('#out-simplify').textContent = e.target.value; regenerateSoon(); });
+  $('#adj-depth').addEventListener('input', e => { project.depth = +e.target.value; $('#out-depth').textContent = e.target.value; regenerateSoon(); });
   for (const k of ['brightness', 'contrast', 'saturation']) {
     $(`#adj-${k}`).addEventListener('input', e => {
       project.adjust[k] = +e.target.value; $(`#out-${k}`).textContent = e.target.value; regenerateSoon();
@@ -437,6 +450,7 @@ function initEditor() {
   $('#shape-select').innerHTML = SHAPE_KEYS.map((k, i) => `<option value="${i}">${STUD_PARTS[k].label}</option>`).join('');
   $('#shape-select').value = editor.shape;
   $('#shape-select').addEventListener('change', e => editor.setShape(+e.target.value));
+  $('#level-select').addEventListener('change', e => editor.setLevel(+e.target.value));
   $('#half-kind').addEventListener('change', e => { editor.setHalf(+e.target.value); updateHalfPreview(); });
   $('#btn-rotate').addEventListener('click', () => { editor.setHalf(editor.halfKind, editor.halfRot + 1); updateHalfPreview(); });
   updateHalfPreview();
@@ -458,6 +472,7 @@ function initEditor() {
     else if (!mod && e.key === 'i') setTool('pick');
     else if (!mod && e.key === 's') setTool('shape');
     else if (!mod && e.key === 'h') setTool('half');
+    else if (!mod && e.key === 'l') setTool('level');
     else if (!mod && e.key === 'r') { editor.setHalf(editor.halfKind, editor.halfRot + 1); updateHalfPreview(); }
     else if (!mod && (e.key === '+' || e.key === '=')) editor.zoomBy(1);
     else if (!mod && e.key === '-') editor.zoomBy(-1);
@@ -474,6 +489,7 @@ function setTool(t) {
   $$('.tool').forEach(b => b.setAttribute('aria-pressed', b.dataset.tool === t));
   $('#shape-opts').hidden = t !== 'shape';
   $('#half-opts').hidden = t !== 'half';
+  $('#level-opts').hidden = t !== 'level';
 }
 
 function updateHalfPreview() {
@@ -530,8 +546,8 @@ function renderOrder() {
       <td class="num">${it.needed}</td><td class="num">${it.spare}</td><td class="num"><strong>${it.qty}</strong></td></tr>`;
   el.innerHTML = `<h1 class="print-title">${esc(project.title)} – Bestellliste</h1><div class="table-wrap"><table>
     <thead><tr><th></th><th>Teil</th><th>Farbe</th><th>LEGO-Farbe (ID)</th><th>BrickLink-Farbe (ID)</th><th class="num">Benötigt</th><th class="num">Reserve</th><th class="num">Bestellen</th></tr></thead>
-    <tbody>${list.items.map(row).join('')}${list.base.length ? `<tr class="group"><th colspan="8">Unterbau (2 Lagen)</th></tr>${list.base.map(row).join('')}` : ''}</tbody>
-    <tfoot><tr><td colspan="5">${list.items.length} Farben · ${project.cols}×${project.rows} Noppen</td><td class="num">${project.cols * project.rows}</td><td></td><td class="num">${list.totalStuds}${list.base.length ? ` + ${list.totalPlates} Platten` : ''}</td></tr></tfoot>
+    <tbody>${list.items.map(row).join('')}${list.risers.length ? `<tr class="group"><th colspan="8">Sockel für Ebenen</th></tr>${list.risers.map(row).join('')}` : ''}${list.base.length ? `<tr class="group"><th colspan="8">Unterbau (2 Lagen)</th></tr>${list.base.map(row).join('')}` : ''}</tbody>
+    <tfoot><tr><td colspan="5">${list.items.length} Farben · ${project.cols}×${project.rows} Noppen</td><td class="num">${project.cols * project.rows}</td><td></td><td class="num">${list.totalStuds}${list.totalRisers ? ` + ${list.totalRisers} Sockel` : ''}${list.base.length ? ` + ${list.totalPlates} Platten` : ''}</td></tr></tfoot>
   </table></div>`;
 }
 
@@ -540,6 +556,8 @@ function initOrder() {
   $('#spare-select').addEventListener('change', e => { project.sparePercent = +e.target.value; renderOrder(); save(); });
   $('#chk-base').addEventListener('change', e => { project.includeBase = e.target.checked; renderOrder(); save(); });
   $('#base-color').addEventListener('change', e => { project.baseColorId = +e.target.value; renderOrder(); save(); });
+  $('#riser-color').innerHTML = '<option value="match">wie Oberfläche (Seiten in Bildfarbe)</option>' + $('#base-color').innerHTML;
+  $('#riser-color').addEventListener('change', e => { const v = e.target.value; project.riserColorId = v === 'match' ? v : +v; renderOrder(); save(); });
   $('#btn-csv').addEventListener('click', () => project.grid && download(`${slug(project.title)}-bestellliste.csv`, orderListToCsv(currentOrderList()), 'text/csv;charset=utf-8'));
   $('#btn-bricklink').addEventListener('click', () => project.grid && download(`${slug(project.title)}-bricklink.xml`, orderListToBrickLinkXml(currentOrderList()), 'application/xml'));
   $('#btn-copy-xml').addEventListener('click', async () => {
