@@ -103,7 +103,15 @@ function seamsOf(plates, W, H) {
  * Plant den kompletten Unterbau.
  * @returns {{top: Plate[], bottom: Plate[], counts: {part, top, bottom, total}[], total: number}}
  */
+const planCache = new Map();
+/** Wie planSubstructureUncached, aber je Größe nur einmal berechnet. */
 export function planSubstructure(cols, rows) {
+  const k = `${cols}x${rows}`;
+  if (!planCache.has(k)) { if (planCache.size > 20) planCache.clear(); planCache.set(k, planSubstructureUncached(cols, rows)); }
+  return planCache.get(k);
+}
+
+function planSubstructureUncached(cols, rows) {
   // Waagrechte und senkrechte Bänder probieren, die Variante mit weniger Platten gewinnt.
   // (Bei ungerader Breite passen z. B. keine 16×16-Platten in waagrechte Bänder.)
   const plan = (W, H) => {

@@ -2,7 +2,7 @@
 import { LEGO_COLORS } from './colors.js';
 import {
   STUD_PARTS, SHAPE_KEYS, SHAPE_PLATE, SHAPE_TILE, SHAPE_INDEX, LONG_TILES, OVERLAY_PARTS, SECTION,
-  overlayCode, overlayKind, overlayRot,
+  overlayCode, overlayKind, overlayRot, overlaySize, OVERLAY_COVERED,
 } from './parts.js';
 import { hexToRgb, rgbToLab } from './mosaic.js';
 
@@ -13,12 +13,13 @@ const rotCW = ([x, y]) => [1 - y, x];
 const rotCCW = ([x, y]) => [y, 1 - x];
 const fmt = v => +v.toFixed(4);
 
-/** Liegt der Punkt (x, y) im Teil `code`? */
+/** Liegt der Punkt (x, y) – normiert auf die Grundfläche des Teils, 0..1 – im Teil `code`? */
 export function overlayContains(code, x, y) {
   let p = [x, y];
   for (let r = overlayRot(code); r > 0; r--) p = rotCCW(p);
-  const [u, v] = p;
-  if (overlayKind(code) === 0) return u * u + v * v <= 1;                 // Viertelkreis, Ecke oben links
+  const [u, v] = p, kind = overlayKind(code);
+  if (kind === 0 || kind === 3) return u * u + v * v <= 1;                // Viertelkreis, Ecke oben links
+  if (kind === 2) return u + v <= 1;                                      // Dreieck, rechter Winkel oben links
   return v <= 0.5 || (u - 0.5) ** 2 + (v - 0.5) ** 2 <= 0.25;             // Halbkreis, gerade Kante oben
 }
 
@@ -26,7 +27,8 @@ export function overlayContains(code, x, y) {
 export function overlayPath(code) {
   const kind = overlayKind(code), rot = overlayRot(code);
   const pt = p => { for (let r = 0; r < rot; r++) p = rotCW(p); return `${fmt(p[0])} ${fmt(p[1])}`; };
-  if (kind === 0) return `M${pt([0, 0])} L${pt([1, 0])} A1 1 0 0 1 ${pt([0, 1])} Z`;
+  if (kind === 0 || kind === 3) return `M${pt([0, 0])} L${pt([1, 0])} A1 1 0 0 1 ${pt([0, 1])} Z`;
+  if (kind === 2) return `M${pt([0, 0])} L${pt([1, 0])} L${pt([0, 1])} Z`;
   return `M${pt([0, 0])} L${pt([1, 0])} L${pt([1, 0.5])} A0.5 0.5 0 0 1 ${pt([0, 0.5])} Z`;
 }
 
@@ -34,28 +36,35 @@ export function overlayPath(code) {
 export function overlayLabelPoints(code) {
   const rot = overlayRot(code);
   const turn = p => { for (let r = 0; r < rot; r++) p = rotCW(p); return p; };
-  return overlayKind(code) === 0
-    ? { top: turn([0.36, 0.36]), base: turn([0.86, 0.86]) }
-    : { top: turn([0.5, 0.42]), base: turn([0.11, 0.89]) };
+  const kind = overlayKind(code);
+  if (kind === 0) return { top: turn([0.36, 0.36]), base: turn([0.86, 0.86]) };
+  if (kind === 2) return { top: turn([0.27, 0.27]), base: turn([0.78, 0.78]) };
+  if (kind === 3) return { top: turn([0.3, 0.3]), base: turn([0.88, 0.88]) };
+  return { top: turn([0.5, 0.42]), base: turn([0.11, 0.89]) };
 }
 
 const maskCache = new Map();
-/** Bedeckungsanteil je Teilpixel bei S×S Teilpixeln pro Zelle. */
+/** Bedeckungsanteil je Teilpixel bei S×S Teilpixeln pro Zelle (Maske über die ganze Grundfläche, (S·size)²). */
 export function overlayMask(code, S) {
   const k = `${code}|${S}`;
   if (maskCache.has(k)) return maskCache.get(k);
-  const m = new Float32Array(S * S), Q = 8;
-  for (let sy = 0; sy < S; sy++) for (let sx = 0; sx < S; sx++) {
+  const T = S * overlaySize(code), m = new Float32Array(T * T), Q = 8;
+  for (let sy = 0; sy < T; sy++) for (let sx = 0; sx < T; sx++) {
     let n = 0;
     for (let qy = 0; qy < Q; qy++) for (let qx = 0; qx < Q; qx++) {
-      if (overlayContains(code, (sx + (qx + 0.5) / Q) / S, (sy + (qy + 0.5) / Q) / S)) n++;
+      if (overlayContains(code, (sx + (qx + 0.5) / Q) / T, (sy + (qy + 0.5) / Q) / T)) n++;
     }
-    m[sy * S + sx] = n / (Q * Q);
+    m[sy * T + sx] = n / (Q * Q);
   }
   maskCache.set(k, m);
   return m;
 }
 export const ALL_OVERLAY_CODES = OVERLAY_PARTS.flatMap((_, k) => [0, 1, 2, 3].map(r => overlayCode(k, r)));
+const SMALL_CODES = ALL_OVERLAY_CODES.filter(c => overlaySize(c) === 1);
+const BIG_CODES = ALL_OVERLAY_CODES.filter(c => overlaySize(c) === 2);
+// Formteile nur an echten Konturen: Teil und Untergrund müssen sich deutlich unterscheiden (ΔE76),
+// sonst entsteht zwischen ähnlichen Farben ein unruhiges Muster statt einer Kante.
+const MIN_CONTRAST2 = 28 * 28;
 
 // ---------- Farben ----------
 let labCache = null;
@@ -68,18 +77,20 @@ const dist2 = (a, b) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) 
 // ---------- Flächen vereinfachen ----------
 /** Zusammenhängende Flächen gleicher Farbe (4er-Nachbarschaft): Label je Zelle und Größe je Label. */
 export function components(grid, cols, rows) {
-  const n = cols * rows, label = new Int32Array(n).fill(-1), sizes = [], stack = [];
+  const n = cols * rows, label = new Int32Array(n).fill(-1), sizes = [], stack = new Int32Array(n);
   for (let s = 0; s < n; s++) {
     if (label[s] >= 0) continue;
     const id = sizes.length, v = grid[s];
-    let size = 0;
-    label[s] = id; stack.push(s);
-    while (stack.length) {
-      const i = stack.pop(); size++;
+    let size = 0, top = 0;
+    label[s] = id; stack[top++] = s;
+    while (top) {
+      const i = stack[--top]; size++;
       const x = i % cols;
-      for (const j of [x > 0 ? i - 1 : -1, x < cols - 1 ? i + 1 : -1, i - cols, i + cols]) {
-        if (j >= 0 && j < n && label[j] < 0 && grid[j] === v) { label[j] = id; stack.push(j); }
-      }
+      let j;
+      if (x > 0 && label[j = i - 1] < 0 && grid[j] === v) { label[j] = id; stack[top++] = j; }
+      if (x < cols - 1 && label[j = i + 1] < 0 && grid[j] === v) { label[j] = id; stack[top++] = j; }
+      if (i >= cols && label[j = i - cols] < 0 && grid[j] === v) { label[j] = id; stack[top++] = j; }
+      if (i + cols < n && label[j = i + cols] < 0 && grid[j] === v) { label[j] = id; stack[top++] = j; }
     }
     sizes.push(size);
   }
@@ -97,29 +108,33 @@ export function simplify(grid, cols, rows, minSize) {
   if (minSize < 2) return 0;
   const pal = colorLab();
   let changed = 0;
-  for (let s = 2; s <= minSize; s = s < 6 ? s + 1 : Math.ceil(s * 1.4)) {
+  for (let s = 2; s <= minSize; s = s < 6 ? s + 1 : Math.ceil(s * 1.7)) {
     const lim = Math.min(s, minSize);
     const { label, sizes } = components(grid, cols, rows);
     const cells = new Map();
     for (let i = 0; i < label.length; i++) if (sizes[label[i]] < lim) {
       const l = label[i]; if (!cells.has(l)) cells.set(l, []); cells.get(l).push(i);
     }
+    if (!cells.size) { if (lim === minSize) break; continue; }
     const order = [...cells.keys()].sort((a, b) => sizes[a] - sizes[b]);
+    const n = grid.length, border = new Float64Array(256), touched = [];
     for (const l of order) {
       const list = cells.get(l), own = grid[list[0]];
-      const border = new Map();
+      const add = c => { if (c !== own) { if (!border[c]) touched.push(c); border[c]++; } };
       for (const i of list) {
         const x = i % cols;
-        for (const j of [x > 0 ? i - 1 : -1, x < cols - 1 ? i + 1 : -1, i - cols, i + cols]) {
-          if (j < 0 || j >= grid.length || grid[j] === own) continue;
-          border.set(grid[j], (border.get(grid[j]) || 0) + 1);
-        }
+        if (x > 0) add(grid[i - 1]);
+        if (x < cols - 1) add(grid[i + 1]);
+        if (i >= cols) add(grid[i - cols]);
+        if (i + cols < n) add(grid[i + cols]);
       }
       let best = -1, bestS = 0;
-      for (const [c, b] of border) {
-        const sc = b / (1 + Math.sqrt(dist2(pal[own], pal[c])) / 15);
+      for (const c of touched) {
+        const sc = border[c] / (1 + Math.sqrt(dist2(pal[own], pal[c])) / 15);
         if (sc > bestS) { bestS = sc; best = c; }
+        border[c] = 0;
       }
+      touched.length = 0;
       if (best < 0) continue;
       for (const i of list) grid[i] = best;
       changed += list.length;
@@ -167,7 +182,7 @@ export function autoShapes(grid, cols, rows, { area = 'plate-round', edge = 'til
  * @param strength 0..100 (0 = aus)
  * @returns {{overlay: Uint8Array, overlayColor: Uint8Array, count: number}}
  */
-export function computeOverlays(subRgb, grid, cols, rows, S, strength) {
+export function computeOverlays(subRgb, grid, cols, rows, S, strength, blocked = null) {
   const n = cols * rows;
   const overlay = new Uint8Array(n), overlayColor = new Uint8Array(n);
   if (strength <= 0) return { overlay, overlayColor, count: 0 };
@@ -177,12 +192,13 @@ export function computeOverlays(subRgb, grid, cols, rows, S, strength) {
   const keep = 0.8 - 0.4 * t;      // Anteil des Fehlers, der höchstens übrig bleiben darf
   const minGain = 150 - 120 * t;   // Mindestgewinn je Teilpixel (ΔE², 150 ≈ ΔE 12 … 30 ≈ ΔE 5,5)
   const minSpread = 200 - 120 * t; // Mindest-Streuung in der Zelle (ΔE², ≈ ΔE 14 … 9)
-  const masks = ALL_OVERLAY_CODES.map(c => [c, overlayMask(c, S)]);
+  const masks = SMALL_CODES.map(c => [c, overlayMask(c, S)]);
   const sub = new Array(SS);
   let count = 0;
   const src = Uint8Array.from(grid);
   for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
     const i = y * cols + x, A = src[i];
+    if (blocked && blocked[i]) continue;
     for (let sy = 0; sy < S; sy++) for (let sx = 0; sx < S; sx++) {
       const o = ((y * S + sy) * W + x * S + sx) * 3;
       sub[sy * S + sx] = rgbToLab(subRgb[o], subRgb[o + 1], subRgb[o + 2]);
@@ -206,6 +222,7 @@ export function computeOverlays(subRgb, grid, cols, rows, S, strength) {
     let best = null, bestE = e1 * keep;
     for (const B of cand) {
       const LB = lab[B];
+      if (dist2(LA, LB) < MIN_CONTRAST2) continue;
       for (const [base, top, Lb, Lt] of [[A, B, LA, LB], [B, A, LB, LA]]) {
         for (const [code, m] of masks) {
           let e = 0;
@@ -220,6 +237,102 @@ export function computeOverlays(subRgb, grid, cols, rows, S, strength) {
     if (best && (e1 - bestE) / SS >= minGain) {
       grid[i] = best.base; overlay[i] = best.code; overlayColor[i] = best.top; count++;
     }
+  }
+  return { overlay, overlayColor, count };
+}
+
+// ---------- Große Formteile (2×2) ----------
+/**
+ * Setzt 2×2-Formteile (Dreieck, Viertelkreis) dort, wo sie die Kontur deutlich besser treffen
+ * als vier einfarbige Steine. Das Formteil hat die Farbe T; jede der vier Platten darunter bekommt
+ * die Farbe, die ihre freie Ecke am besten trifft. Kein Teil über eine Abschnittsgrenze.
+ * Gierig nach Gewinn, ohne Überlappung. Ändert grid (Plattenfarben).
+ * @param subRgb  Float32Array RGB, (cols·S) × (rows·S) Teilpixel (Foto oder Scherenschnitt)
+ * @param strength 0..100 (0 = aus)
+ * @param blocked optional Uint8Array: Zellen, die frei bleiben müssen
+ */
+export function fitBigPieces(subRgb, grid, cols, rows, S, strength, blocked = null) {
+  const n = cols * rows, overlay = new Uint8Array(n), overlayColor = new Uint8Array(n);
+  if (strength <= 0) return { overlay, overlayColor, count: 0 };
+  const lab = colorLab(), W = cols * S, T2 = 2 * S, A = T2 * T2;
+  const t = strength / 100;
+  const minGain = 140 - 80 * t; // Mindestgewinn je Teilpixel (ΔE²)
+  const T2_ = 2 * S, cellOfS = new Uint8Array(T2_ * T2_);
+  for (let s = 0; s < cellOfS.length; s++) cellOfS[s] = ((s / T2_ | 0) >= S ? 2 : 0) + ((s % T2_) >= S ? 1 : 0);
+  // je Formteil: Maske, freie Teilpixel je Zelle, Zelle mit der größten freien Fläche
+  const masks = BIG_CODES.map(c => {
+    const m = overlayMask(c, S), cnt = [0, 0, 0, 0];
+    for (let s = 0; s < m.length; s++) if (m[s] < 0.5) cnt[cellOfS[s]]++;
+    return [c, m, cnt, cnt.indexOf(Math.max(...cnt))];
+  });
+  const outErr = new Float64Array(4 * 64);
+  // Lab je Teilpixel einmal vorab (gleiche RGB-Werte teilen sich das Ergebnis)
+  const labAll = new Float32Array(subRgb.length), labCache = new Map();
+  for (let o = 0; o < subRgb.length; o += 3) {
+    const key = (Math.round(subRgb[o]) << 16) | (Math.round(subRgb[o + 1]) << 8) | Math.round(subRgb[o + 2]);
+    let l = labCache.get(key);
+    if (!l) { l = rgbToLab(subRgb[o], subRgb[o + 1], subRgb[o + 2]); labCache.set(key, l); }
+    labAll[o] = l[0]; labAll[o + 1] = l[1]; labAll[o + 2] = l[2];
+  }
+  const cands = [];
+  const sec = v => Math.floor(v / SECTION);
+  const px = new Array(A);
+  for (let y = 0; y + 1 < rows; y++) for (let x = 0; x + 1 < cols; x++) {
+    if (sec(x) !== sec(x + 1) || sec(y) !== sec(y + 1)) continue;
+    const cells = [y * cols + x, y * cols + x + 1, (y + 1) * cols + x, (y + 1) * cols + x + 1];
+    if (blocked && cells.some(c => blocked[c])) continue;
+    // Farbkandidaten: 4×4-Umgebung
+    const colors = new Set();
+    for (let dy = -1; dy <= 2; dy++) for (let dx = -1; dx <= 2; dx++) {
+      const nx = x + dx, ny = y + dy;
+      if (nx >= 0 && ny >= 0 && nx < cols && ny < rows) colors.add(grid[ny * cols + nx]);
+    }
+    if (colors.size < 2) continue;
+    for (let sy = 0; sy < T2; sy++) for (let sx = 0; sx < T2; sx++) px[sy * T2 + sx] = ((y * S + sy) * W + x * S + sx) * 3;
+    const cl = [...colors];
+    // d[c][s] = Abstand Teilpixel s zu Farbe c
+    const d = cl.map(c => {
+      const L = lab[c], a = new Float32Array(A);
+      for (let s = 0; s < A; s++) { const o = px[s]; a[s] = (labAll[o] - L[0]) ** 2 + (labAll[o + 1] - L[1]) ** 2 + (labAll[o + 2] - L[2]) ** 2; }
+      return a;
+    });
+    let plain = 0;
+    const gi = cells.map(c => cl.indexOf(grid[c]));
+    for (let s = 0; s < A; s++) plain += d[gi[cellOfS[s]]][s];
+    if (plain / A < minGain) continue;
+    let best = null;
+    const K = cl.length;
+    for (const [code, m, cnt, k0] of masks) {
+      // Pro Zelle: Fehler der freien Teilpixel je Grundfarbe
+      outErr.fill(0, 0, 4 * K);
+      for (let s = 0; s < A; s++) if (m[s] < 0.5) { const o = cellOfS[s] * K; for (let c = 0; c < K; c++) outErr[o + c] += d[c][s]; }
+      let baseErr = 0;
+      const bases = [0, 1, 2, 3].map(k => {
+        if (!cnt[k]) return grid[cells[k]];
+        let bc = 0; for (let c = 1; c < K; c++) if (outErr[k * K + c] < outErr[k * K + bc]) bc = c;
+        baseErr += outErr[k * K + bc]; return cl[bc];
+      });
+      for (let ti = 0; ti < K; ti++) {
+        // Kontrast zur Grundfarbe der Ecke, die am meisten frei bleibt
+        if (dist2(lab[cl[ti]], lab[bases[k0]]) < MIN_CONTRAST2) continue;
+        let e = baseErr;
+        const dt = d[ti];
+        for (let s = 0; s < A; s++) if (m[s] >= 0.5) e += dt[s];
+        if (!best || e < best.err) best = { code, top: cl[ti], bases, err: e };
+      }
+    }
+    if (!best) continue;
+    const gain = plain - best.err;
+    if (gain / A >= minGain) cands.push({ ...best, gain, cells });
+  }
+  cands.sort((a, b) => b.gain - a.gain);
+  const used = new Uint8Array(n);
+  let count = 0;
+  for (const c of cands) {
+    if (c.cells.some(i => used[i])) continue;
+    c.cells.forEach((i, k) => { used[i] = 1; grid[i] = c.bases[k]; overlay[i] = k ? OVERLAY_COVERED : c.code; });
+    overlayColor[c.cells[0]] = c.top;
+    count++;
   }
   return { overlay, overlayColor, count };
 }
@@ -249,7 +362,7 @@ export function buildElements(project) {
   const overlay = project.overlay, overlayColor = project.overlayColor;
   const height = project.height;
   const same = (i, j) => grid[j] === grid[i] && (!height || height[j] === height[i]); // gleiche Farbe und Ebene
-  const els = [];
+  const els = [], tops = [];
   const used = new Uint8Array(cols * rows);
   const mergeable = i => shapes[i] === SHAPE_TILE && !(overlay && overlay[i]);
   // Fliesen laufen entlang einer Kante: an einer reinen senkrechten Kante nicht waagrecht zusammenfassen
@@ -309,10 +422,13 @@ export function buildElements(project) {
     if (used[i]) continue;
     const ov = overlay ? overlay[i] : 0;
     const key = ov ? 'plate' : SHAPE_KEYS[shapes[i]];
-    els.push({ kind: 'stud', x, y, w: 1, h: 1, part: { key, ...STUD_PARTS[key] }, colorIndex: grid[i] });
-    if (ov) els.push({ kind: 'overlay', x, y, w: 1, h: 1, part: OVERLAY_PARTS[overlayKind(ov)], colorIndex: overlayColor[i], code: ov });
+    els.push({ kind: 'stud', x, y, w: 1, h: 1, part: { key, ...STUD_PARTS[key] }, colorIndex: grid[i], ...(ov ? { under: true } : {}) });
+    if (ov && ov !== OVERLAY_COVERED) {
+      const sz = overlaySize(ov);
+      tops.push({ kind: 'overlay', x, y, w: sz, h: sz, part: OVERLAY_PARTS[overlayKind(ov)], colorIndex: overlayColor[i], code: ov });
+    }
   }
-  return els;
+  return els.concat(tops); // Formteile zuletzt: liegen über den Platten
 }
 
 /** Zählt Teile je (Teil, Farbe). */

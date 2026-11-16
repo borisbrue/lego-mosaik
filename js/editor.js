@@ -1,4 +1,4 @@
-import { overlayCode, overlayKind, overlayRot } from './parts.js';
+import { overlayCode, overlayKind, overlayRot, overlaySize, OVERLAY_COVERED, OVERLAY_PARTS, SECTION } from './parts.js';
 import { drawCellOf, renderMosaic, drawSectionLines } from './render.js';
 import { floodFill } from './mosaic.js';
 
@@ -144,9 +144,24 @@ export class Editor {
     this.drawCells([cell.i]);
   }
 
-  /** Halbe Noppe setzen; erneuter Klick auf dieselbe Art dreht sie um 90°. */
+  /** Anker (Zelle oben links) des Formteils, das Zelle i bedeckt, oder -1. */
+  anchorOf(i) {
+    const p = this.project, ov = p.overlay;
+    if (!ov[i]) return -1;
+    if (ov[i] !== OVERLAY_COVERED) return i;
+    for (const j of [i - 1, i - p.cols, i - p.cols - 1]) if (j >= 0 && ov[j] && ov[j] !== OVERLAY_COVERED && overlaySize(ov[j]) === 2) {
+      const ax = j % p.cols, ay = (j / p.cols) | 0, x = i % p.cols, y = (i / p.cols) | 0;
+      if (x - ax <= 1 && y - ay <= 1 && x >= ax && y >= ay) return j;
+    }
+    return -1;
+  }
+
+  /** Formteil setzen; erneuter Klick auf dieselbe Art dreht es um 90°. 2×2-Teile: Zelle = oben links. */
   placeHalf(cell) {
-    const p = this.project, i = cell.i, cur = p.overlay[i];
+    const p = this.project, size = this.halfKind >= 0 ? OVERLAY_PARTS[this.halfKind].size : 1;
+    const anchor = this.anchorOf(cell.i);
+    if (size === 2 || (anchor >= 0 && overlaySize(p.overlay[anchor]) === 2)) { this.placeBig(cell, anchor); return; }
+    const i = cell.i, cur = p.overlay[i];
     let code = 0, color = p.overlayColor[i];
     if (this.halfKind >= 0) {
       const rot = cur && overlayKind(cur) === this.halfKind ? (overlayRot(cur) + 1) & 3 : this.halfRot;
@@ -158,6 +173,29 @@ export class Editor {
     if (code && color !== p.overlayColor[i]) changes.push({ i, f: 'overlayColor', from: p.overlayColor[i], to: color });
     if (!changes.length) return;
     for (const ch of changes) p[ch.f][i] = ch.to;
+    this.commit(changes);
+    this.onHalfRot?.(this.halfRot);
+  }
+
+  placeBig(cell, anchor) {
+    const p = this.project, changes = [];
+    const set = (i, f, to) => { if (p[f][i] !== to) changes.push({ i, f, from: p[f][i], to }); };
+    const footprint = a => [a, a + 1, a + p.cols, a + p.cols + 1];
+    const clear = a => { if (a < 0) return; const sz = overlaySize(p.overlay[a]); (sz === 2 ? footprint(a) : [a]).forEach(i => set(i, 'overlay', 0)); };
+    if (this.halfKind < 0 || OVERLAY_PARTS[this.halfKind].size === 1) { clear(anchor); } // 1×1 auf 2×2: erst entfernen
+    else {
+      // erneuter Klick auf dasselbe Teil dreht es
+      const same = anchor >= 0 && overlayKind(p.overlay[anchor]) === this.halfKind;
+      const a = same ? anchor : cell.i, ax = a % p.cols, ay = (a / p.cols) | 0;
+      if (ax + 1 >= p.cols || ay + 1 >= p.rows || Math.floor(ax / SECTION) !== Math.floor((ax + 1) / SECTION) || Math.floor(ay / SECTION) !== Math.floor((ay + 1) / SECTION)) return;
+      const rot = same ? (overlayRot(p.overlay[anchor]) + 1) & 3 : this.halfRot;
+      for (const i of footprint(a)) { const o = this.anchorOf(i); if (o >= 0 && o !== a) clear(o); }
+      footprint(a).forEach((i, k) => set(i, 'overlay', k ? OVERLAY_COVERED : overlayCode(this.halfKind, rot)));
+      set(a, 'overlayColor', this.color);
+      this.halfRot = rot;
+    }
+    if (!changes.length) return;
+    for (const ch of changes) p[ch.f][ch.i] = ch.to;
     this.commit(changes);
     this.onHalfRot?.(this.halfRot);
   }

@@ -1,5 +1,5 @@
 import { LEGO_COLORS } from './colors.js';
-import { STUD_PARTS, SHAPE_KEYS, SHAPE_INDEX } from './parts.js';
+import { STUD_PARTS, SHAPE_KEYS, SHAPE_INDEX, OVERLAY_COVERED, overlaySize } from './parts.js';
 import { buildElements, overlayPath } from './pieces.js';
 
 const pathCache = new Map();
@@ -44,9 +44,10 @@ export function drawOverlay(ctx, x, y, s, hex, code) {
   if (!path) return;
   ctx.save();
   ctx.translate(x, y); ctx.scale(s, s);
-  if (s >= 6) { ctx.shadowColor = 'rgba(0,0,0,.45)'; ctx.shadowBlur = s * 0.12; ctx.shadowOffsetX = s * 0.04; ctx.shadowOffsetY = s * 0.06; }
+  if (s >= 6) { // Schatten als versetzte Fläche (shadowBlur ist bei vielen Teilen zu langsam)
+    ctx.save(); ctx.translate(0.04, 0.06); ctx.fillStyle = 'rgba(0,0,0,.4)'; ctx.fill(path); ctx.restore();
+  }
   ctx.fillStyle = hex; ctx.fill(path);
-  ctx.shadowColor = 'transparent';
   if (s >= 6) { ctx.strokeStyle = 'rgba(255,255,255,.25)'; ctx.lineWidth = 1 / s; ctx.stroke(path); }
   ctx.restore();
 }
@@ -71,7 +72,7 @@ export function drawCellOf(ctx, p, i, cell) {
   const x = (i % p.cols) * cell, y = ((i / p.cols) | 0) * cell;
   const ov = p.overlay ? p.overlay[i] : 0;
   drawCell(ctx, x, y, cell, LEGO_COLORS[p.grid[i]].hex, ov ? 'square' : shapeOf(p, i));
-  if (ov) drawOverlay(ctx, x, y, cell, LEGO_COLORS[p.overlayColor[i]].hex, ov);
+  if (ov && ov !== OVERLAY_COVERED) drawOverlay(ctx, x, y, cell * overlaySize(ov), LEGO_COLORS[p.overlayColor[i]].hex, ov);
 }
 
 export function renderMosaic(ctx, p, cell) {
@@ -79,7 +80,7 @@ export function renderMosaic(ctx, p, cell) {
     const hex = LEGO_COLORS[e.colorIndex].hex, x = e.x * cell, y = e.y * cell;
     if (e.kind === 'stud') drawCell(ctx, x, y, cell, hex, e.part.shape);
     else if (e.kind === 'long') drawLong(ctx, x, y, e.w, e.h, cell, hex);
-    else drawOverlay(ctx, x, y, cell, hex, e.code);
+    else drawOverlay(ctx, x, y, cell * e.w, hex, e.code);
   }
   if (p.height) drawRelief(ctx, p, cell);
 }

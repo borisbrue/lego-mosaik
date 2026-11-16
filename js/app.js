@@ -1,6 +1,7 @@
 import { LEGO_COLORS, PALETTE_PRESETS } from './colors.js';
 import { STUD_PARTS, STUD_MM, SECTION, PAPER_FORMATS, paperStuds, SHAPE_KEYS, SHAPE_INDEX, SHAPE_PLATE, overlayCode } from './parts.js';
-import { autoShapes, computeOverlays, simplify, buildElements, overlayPath } from './pieces.js';
+import { autoShapes, computeOverlays, fitBigPieces, simplify, buildElements, overlayPath } from './pieces.js';
+import { cutout, cellsFromCutout, cutoutRgb } from './cutout.js';
 import { autoDepth, planRisers } from './layers.js';
 import { segment, regionAt, regionAnchor, regionGroup, applyRegionOps } from './regions.js';
 import { planSubstructure } from './substructure.js';
@@ -27,6 +28,9 @@ function defaultProject() {
     longTiles: true,          // eckige Fliesen zu 1×2–1×4 zusammenfassen
     relief: 0,                // halbe Noppen: 0 = aus … 100 = viele
     sharpen: 30,              // 0..100
+    detail: 0,                // Detailgrad 1 (Scherenschnitt) … 5 (Foto), 0 = eigene Einstellung
+    cutout: 0,                // 0..100: Scherenschnitt (glatte, flache Farbflächen); 0 = aus
+    bigPieces: 0,             // 0..100: große Formteile (2×2 Dreieck/Viertelkreis); 0 = aus
     colorCount: 0,            // 0 = alle erlaubten Farben, sonst die n passendsten
     pinned: [],               // LEGO-Farb-IDs, die bei begrenzter Anzahl immer dabei sind
     regionDetail: 50,         // Feinheit der Bereichserkennung
@@ -213,6 +217,24 @@ function sampleImage() {
   return sampled;
 }
 
+// ---------- Detailgrad ----------
+const DETAIL_PRESETS = {
+  1: { label: 'Scherenschnitt', colorCount: 4,  cutout: 72, simplify: 60, bigPieces: 70, relief: 20, edgeSensitivity: 40 },
+  2: { label: 'grob',           colorCount: 6,  cutout: 58, simplify: 50, bigPieces: 60, relief: 30, edgeSensitivity: 45 },
+  3: { label: 'mittel',         colorCount: 8,  cutout: 42, simplify: 40, bigPieces: 50, relief: 35, edgeSensitivity: 50 },
+  4: { label: 'fein',           colorCount: 12, cutout: 25, simplify: 30, bigPieces: 40, relief: 35, edgeSensitivity: 50 },
+  5: { label: 'Foto',           colorCount: 0,  cutout: 0,  simplify: 20, bigPieces: 0,  relief: 20, edgeSensitivity: 55 },
+};
+const DETAIL_CONTROLS = ['#color-count', '#adj-cutout', '#adj-simplify', '#adj-big', '#adj-relief', '#edge-sens'];
+function applyDetail(level) {
+  const p = DETAIL_PRESETS[level];
+  if (!p) return;
+  const { label, ...values } = p;
+  Object.assign(project, values, { detail: level });
+  syncControls();
+  regenerate();
+}
+
 // ---------- Mosaik berechnen ----------
 function enabledIndices() {
   return project.enabled.map(id => indexByLegoId.get(id)).filter(i => i !== undefined);
@@ -234,22 +256,28 @@ function regenerate() {
   }
   chosenColors = new Set(idx);
   const prepared = preparePalette(idx.map(i => LEGO_COLORS[i]));
-  const q = quantize(px, cols, rows, prepared, { dither: project.dither / 100 });
-  const grid = Uint8Array.from(q, i => idx[i]);
-  if (simp > 0) simplify(grid, cols, rows, 1 + Math.round(simp ** 1.5 * cols * rows / 300));
+  const sub = adjustPixels(Float32Array.from(smp.sub), project.adjust);
+  let grid, template = sub; // Vorlage für die Formteile: Foto oder Scherenschnitt
+  if (project.cutout > 0) {
+    const g = cutout(sub, cols * SUB, rows * SUB, idx, prepared, project.cutout);
+    grid = cellsFromCutout(g, cols, rows, SUB);
+    template = cutoutRgb(g);
+  } else {
+    grid = Uint8Array.from(quantize(px, cols, rows, prepared, { dither: project.dither / 100 }), i => idx[i]);
+    if (simp > 0) simplify(grid, cols, rows, 1 + Math.round(simp ** 1.5 * cols * rows / 300));
+  }
   segmentation = segment(px, cols, rows, project.regionDetail);
   const ops = project.regionOps.map(o => ({ ...o, color: o.colorId != null ? indexByLegoId.get(o.colorId) : null }));
   const { hidden, levels } = applyRegionOps(grid, cols, rows, segmentation, ops);
   const shapes = autoShapes(grid, cols, rows, { area: project.part, edge: project.edgePart, sensitivity: project.edgeSensitivity }, px);
-  let overlay = new Uint8Array(cols * rows), overlayColor = new Uint8Array(cols * rows);
+  // Formteile: erst die großen (2×2), dann die kleinen (1×1) in den übrigen Zellen
+  const { overlay, overlayColor } = fitBigPieces(template, grid, cols, rows, SUB, project.bigPieces, hidden);
   if (project.relief > 0) {
-    const sub = adjustPixels(Float32Array.from(smp.sub), project.adjust);
-    ({ overlay, overlayColor } = computeOverlays(sub, grid, cols, rows, SUB, project.relief));
-    for (let i = 0; i < overlay.length; i++) {
-      if (hidden[i]) overlay[i] = 0;
-      if (overlay[i]) shapes[i] = SHAPE_PLATE;
-    }
+    const blocked = Uint8Array.from(overlay, (v, i) => (v || hidden[i] ? 1 : 0));
+    const small = computeOverlays(template, grid, cols, rows, SUB, project.relief, blocked);
+    for (let i = 0; i < overlay.length; i++) if (small.overlay[i]) { overlay[i] = small.overlay[i]; overlayColor[i] = small.overlayColor[i]; }
   }
+  for (let i = 0; i < overlay.length; i++) if (overlay[i]) shapes[i] = SHAPE_PLATE;
   const height = autoDepth(grid, cols, rows, project.depth, px);
   for (let i = 0; i < height.length; i++) if (levels[i] >= 0) height[i] = levels[i];
   Object.assign(project, { grid, shapes, overlay, overlayColor, height });
@@ -268,7 +296,7 @@ function updateDesignView() {
   $('#crop-wrap').hidden = !image;
   $('#drop-zone span').textContent = image ? 'Anderes Foto wählen' : 'Foto wählen oder hierher ziehen';
   $('#design-lock').hidden = !project.edited;
-  for (const id of ['#design-settings', '#design-pieces', '#design-layers', '#design-adjust', '#design-palette']) $(id).disabled = project.edited;
+  for (const id of ['#design-settings', '#design-detail', '#design-pieces', '#design-layers', '#design-adjust', '#design-palette']) $(id).disabled = project.edited;
   $('#crop-zoom').disabled = project.edited;
   if (!has) { $('#design-stats').textContent = ''; return; }
   const c = $('#preview-canvas');
@@ -286,7 +314,7 @@ function updateDesignView() {
   const risers = planRisers(project), levels = project.height ? Math.max(0, ...project.height) : 0;
   $('#design-stats').textContent =
     `${project.cols} × ${project.rows} Noppen · ${(project.cols * STUD_MM / 10).toFixed(1)} × ${(project.rows * STUD_MM / 10).toFixed(1)} cm · ` +
-    `${els.length} Teile` + (longs ? ` (davon ${longs} lange Fliesen)` : '') + (halves ? ` · ${halves} halbe Noppen` : '') +
+    `${els.length} Teile` + (longs ? ` (davon ${longs} lange Fliesen)` : '') + (halves ? ` · ${halves} Formteile` : '') +
     ` · ${used} Farben · Unterbau aus ${plates} Platten` +
     (risers.length ? ` · ${levels} ${levels === 1 ? 'Ebene' : 'Ebenen'} aus ${risers.length} Sockelplatten` : '');
 }
@@ -504,6 +532,10 @@ function syncControls() {
   $('#adj-sharpen').value = project.sharpen; $('#out-sharpen').textContent = project.sharpen;
   $('#adj-simplify').value = project.simplify; $('#out-simplify').textContent = project.simplify;
   $('#adj-depth').value = project.depth; $('#out-depth').textContent = project.depth;
+  $('#adj-cutout').value = project.cutout; $('#out-cutout').textContent = project.cutout;
+  $('#adj-big').value = project.bigPieces; $('#out-big').textContent = project.bigPieces;
+  $('#adj-detail').value = project.detail || 4;
+  $('#out-detail-level').textContent = project.detail ? `${project.detail} · ${DETAIL_PRESETS[project.detail].label}` : 'eigene Einstellung';
   for (const k of ['brightness', 'contrast', 'saturation']) {
     $(`#adj-${k}`).value = project.adjust[k]; $(`#out-${k}`).textContent = project.adjust[k];
   }
@@ -578,6 +610,18 @@ function initDesign() {
   $('#adj-relief').addEventListener('input', e => { project.relief = +e.target.value; $('#out-relief').textContent = e.target.value; regenerateSoon(); });
   $('#adj-sharpen').addEventListener('input', e => { project.sharpen = +e.target.value; $('#out-sharpen').textContent = e.target.value; regenerateSoon(); });
   $('#adj-simplify').addEventListener('input', e => { project.simplify = +e.target.value; $('#out-simplify').textContent = e.target.value; regenerateSoon(); });
+  $('#adj-cutout').addEventListener('input', e => { project.cutout = +e.target.value; $('#out-cutout').textContent = e.target.value; regenerateSoon(); });
+  $('#adj-big').addEventListener('input', e => { project.bigPieces = +e.target.value; $('#out-big').textContent = e.target.value; regenerateSoon(); });
+  $('#adj-detail').addEventListener('input', e => {
+    const l = +e.target.value;
+    $('#out-detail-level').textContent = `${l} · ${DETAIL_PRESETS[l].label}`;
+    clearTimeout(applyDetail.t); applyDetail.t = setTimeout(() => applyDetail(l), 150);
+  });
+  // Einzelregler verstellt → Detailgrad wird „eigene Einstellung“
+  for (const sel of DETAIL_CONTROLS) for (const ev of ['input', 'change']) $(sel).addEventListener(ev, () => {
+    if (!project.detail) return;
+    project.detail = 0; $('#out-detail-level').textContent = 'eigene Einstellung';
+  });
   $('#adj-depth').addEventListener('input', e => { project.depth = +e.target.value; $('#out-depth').textContent = e.target.value; regenerateSoon(); });
   for (const k of ['brightness', 'contrast', 'saturation']) {
     $(`#adj-${k}`).addEventListener('input', e => {

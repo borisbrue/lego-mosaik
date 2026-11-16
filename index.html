@@ -84,14 +84,22 @@
             <p class="hint">Der Unterbau aus LEGO-Platten wird automatisch passend zur Größe geplant.</p>
           </fieldset>
 
+          <fieldset id="design-detail">
+            <legend>Detailgrad</legend>
+            <label class="field range"><span>Scherenschnitt ↔ fein <output id="out-detail-level">eigene</output></span><input id="adj-detail" type="range" min="1" max="5" step="1" value="4" list="detail-ticks"></label>
+            <datalist id="detail-ticks"><option value="1"></option><option value="2"></option><option value="3"></option><option value="4"></option><option value="5"></option></datalist>
+            <p class="hint">Ein Regler für alles: 1 = Scherenschnitt mit wenigen Farben, großen glatten Flächen und großen Formteilen, 5 = Foto mit vielen Farben und Details. Er stellt Farben, Scherenschnitt, Vereinfachen und Formteile passend ein; die Einzelregler darunter bleiben zum Feintuning.</p>
+          </fieldset>
+
           <fieldset id="design-pieces">
             <legend>Steine &amp; Konturen</legend>
             <label class="field"><span>Steintyp Flächen</span><select id="part-select"></select></label>
             <label class="field"><span>Steintyp Konturen</span><select id="edge-select"></select></label>
             <label class="field range" id="edge-sens-wrap"><span>Konturen erkennen <output id="out-edge">50</output></span><input id="edge-sens" type="range" min="0" max="100" value="50"></label>
             <label class="check"><input id="chk-long" type="checkbox" checked> Eckige Fliesen zu 1×2 bis 1×4 zusammenfassen</label>
-            <label class="field range"><span>Halbe Noppen <output id="out-relief">0</output></span><input id="adj-relief" type="range" min="0" max="100" value="0"></label>
-            <p class="hint">Halbe Noppen: Viertel- und Halbkreis-Fliesen auf einer 1×1-Platte glätten schräge und runde Kanten. Sie stehen eine Plattenhöhe höher (Relief).</p>
+            <label class="field range"><span>Große Formteile 2×2 <output id="out-big">0</output></span><input id="adj-big" type="range" min="0" max="100" value="0"></label>
+            <label class="field range"><span>Kleine Formteile 1×1 (halbe Noppen) <output id="out-relief">0</output></span><input id="adj-relief" type="range" min="0" max="100" value="0"></label>
+            <p class="hint">Formteile liegen auf 1×1-Platten und zeichnen Kanten feiner als eine Noppe: Dreieck 2×2 für 45°-Schrägen, Viertelkreis 2×2 für große Rundungen, Viertel- und Halbkreis 1×1 für Details. Sie stehen eine Plattenhöhe höher (Relief).</p>
           </fieldset>
 
           <fieldset id="design-layers">
@@ -107,6 +115,7 @@
             <label class="field range"><span>Sättigung <output id="out-saturation">0</output></span><input id="adj-saturation" type="range" min="-100" max="100" value="0"></label>
             <label class="field range"><span>Dithering <output id="out-dither">0</output></span><input id="adj-dither" type="range" min="0" max="100" value="0"></label>
             <label class="field range"><span>Schärfen <output id="out-sharpen">30</output></span><input id="adj-sharpen" type="range" min="0" max="100" value="30"></label>
+            <label class="field range"><span>Scherenschnitt <output id="out-cutout">0</output></span><input id="adj-cutout" type="range" min="0" max="100" value="0"></label>
             <label class="field range"><span>Vereinfachen <output id="out-simplify">30</output></span><input id="adj-simplify" type="range" min="0" max="100" value="30"></label>
           </fieldset>
 
@@ -163,7 +172,7 @@
           <button class="btn tool" data-tool="fill" aria-pressed="false" title="Fläche füllen (F)">🪣 Füllen</button>
           <button class="btn tool" data-tool="pick" aria-pressed="false" title="Farbe aufnehmen (I)">💧 Pipette</button>
           <button class="btn tool" data-tool="shape" aria-pressed="false" title="Steinform setzen (S)">🔶 Form</button>
-          <button class="btn tool" data-tool="half" aria-pressed="false" title="Halbe Noppe setzen (H), erneut klicken dreht (R)">🌓 Halbe Noppe</button>
+          <button class="btn tool" data-tool="half" aria-pressed="false" title="Formteil setzen (H), erneut klicken dreht (R); 2×2-Teile: Klick = Ecke oben links">🌓 Formteil</button>
           <button class="btn tool" data-tool="level" aria-pressed="false" title="Ebene malen (L)">⛰️ Ebene</button>
           <button class="btn tool" data-tool="pan" aria-pressed="false" title="Verschieben (Leertaste)">✋ Verschieben</button>
         </div>
@@ -189,9 +198,11 @@
           </select>
         </div>
         <div class="tool-group" id="half-opts" hidden>
-          <select id="half-kind" aria-label="Art der halben Noppe">
-            <option value="0">Viertelkreis</option>
-            <option value="1">Halbkreis</option>
+          <select id="half-kind" aria-label="Art des Formteils">
+            <option value="0">Viertelkreis 1×1</option>
+            <option value="1">Halbkreis 1×1</option>
+            <option value="2">Dreieck 2×2</option>
+            <option value="3">Viertelkreis 2×2</option>
             <option value="-1">Entfernen</option>
           </select>
           <button id="btn-rotate" class="btn" title="Drehen (R)">⟳ <svg id="half-preview" viewBox="0 0 1 1" width="16" height="16"><rect width="1" height="1" fill="#ccc"/><path fill="currentColor"/></svg></button>

@@ -192,6 +192,9 @@ export function smoothCells(px, cols, rows, strength) {
   if (strength <= 0) return px;
   const sigma = 14 + 30 * strength, inv = 1 / (2 * sigma * sigma);
   const iters = strength > 0.5 ? 2 : 1;
+  // Gewichte als Tabelle über d/16 (d = quadrierter RGB-Abstand, max. 3·255²)
+  const lut = new Float32Array(12200);
+  for (let k = 0; k < lut.length; k++) lut[k] = Math.exp(-(k * 16 + 8) * inv);
   let src = px;
   for (let it = 0; it < iters; it++) {
     const out = new Float32Array(src.length);
@@ -203,7 +206,7 @@ export function smoothCells(px, cols, rows, strength) {
         if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
         const q = (ny * cols + nx) * 3;
         const d = (src[q] - src[o]) ** 2 + (src[q + 1] - src[o + 1]) ** 2 + (src[q + 2] - src[o + 2]) ** 2;
-        const w = Math.exp(-d * inv) * (dx && dy ? 0.5 : 1);
+        const w = lut[(d / 16) | 0] * (dx && dy ? 0.5 : 1);
         wr += w; sr += w * src[q]; sg += w * src[q + 1]; sb += w * src[q + 2];
       }
       out[o] = sr / wr; out[o + 1] = sg / wr; out[o + 2] = sb / wr;
@@ -324,11 +327,12 @@ export function reducePalette(px, prepared, n, pinned = new Set()) {
   // Gleiche Zellfarben zusammenfassen (Gewicht = Anzahl), sonst wird es bei großen Formaten langsam
   const groups = new Map();
   for (let i = 0; i < px.length; i += 3) {
-    const key = (Math.round(px[i] / 4) << 12) | (Math.round(px[i + 1] / 4) << 6) | Math.round(px[i + 2] / 4);
+    // Gruppen auf 32 Stufen je Kanal: genau genug für die Auswahl, aber viel schneller
+    const key = (Math.round(px[i] / 8) << 10) | (Math.round(px[i + 1] / 8) << 5) | Math.round(px[i + 2] / 8);
     const g = groups.get(key);
-    if (g) g.w++; else groups.set(key, { r: px[i], g: px[i + 1], b: px[i + 2], w: 1 });
+    if (g) { g.r += px[i]; g.g += px[i + 1]; g.b += px[i + 2]; g.w++; } else groups.set(key, { r: px[i], g: px[i + 1], b: px[i + 2], w: 1 });
   }
-  const G = [...groups.values()], m = G.length;
+  const G = [...groups.values()].map(g => ({ r: g.r / g.w, g: g.g / g.w, b: g.b / g.w, w: g.w })), m = G.length;
   const D = new Float32Array(m * k);
   G.forEach((g, a) => {
     const lab = rgbToLab(clamp(g.r), clamp(g.g), clamp(g.b));

@@ -19,15 +19,22 @@ export const LONG_TILES = {
   4: { key: 'tile-1x4', label: 'Fliese 1×4', blId: '2431',  designId: '2431' },
 };
 
-// Halbe Noppen: Fliesen, die auf einer 1×1-Platte sitzen und die Zelle nur teilweise bedecken.
+// Formteile: liegen auf 1×1-Platten und bedecken ihre Zellen nur teilweise (Konturen unterhalb der
+// Noppen-Auflösung). size = Kantenlänge in Noppen.
 // Code im Raster project.overlay: 0 = keine, sonst 1 + kind * 4 + Drehung (0–3, je 90° im Uhrzeigersinn).
+// Bei size 2 steht der Code in der Zelle oben links; die übrigen Zellen tragen OVERLAY_COVERED.
+// Teilenummern geprüft (BrickLink-Katalog, Brick Architect), Stand 11/2026.
 export const OVERLAY_PARTS = [
-  { key: 'quarter', label: 'Fliese 1×1 Viertelkreis', short: 'Viertelkreis', blId: '25269', designId: '25269' },
-  { key: 'half',    label: 'Fliese 1×1 Halbkreis',    short: 'Halbkreis',    blId: '24246', designId: '24246' },
+  { key: 'quarter', label: 'Fliese 1×1 Viertelkreis', short: 'Viertelkreis', blId: '25269', designId: '25269', size: 1 },
+  { key: 'half',    label: 'Fliese 1×1 Halbkreis',    short: 'Halbkreis',    blId: '24246', designId: '24246', size: 1 },
+  { key: 'tri2',    label: 'Fliese 2×2 dreieckig',     short: 'Dreieck 2×2',  blId: '35787', designId: '35787', size: 2 },
+  { key: 'qc2',     label: 'Platte 2×2 Viertelkreis',  short: 'Viertelkreis 2×2', blId: '7904', designId: '7904', size: 2 },
 ];
+export const OVERLAY_COVERED = 255;
 export const overlayCode = (kind, rot) => 1 + kind * 4 + (rot & 3);
 export const overlayKind = code => (code - 1) >> 2;
 export const overlayRot = code => (code - 1) & 3;
+export const overlaySize = code => (code && code !== OVERLAY_COVERED ? OVERLAY_PARTS[overlayKind(code)].size : 1);
 
 // Abschnittsgröße der Bauanleitung (eine Seite je 16×16 Noppen)
 export const SECTION = 16;

@@ -2,7 +2,8 @@ import { LEGO_COLORS } from './colors.js';
 import { SECTION as SEC, STUD_MM } from './parts.js';
 import { hexToRgb } from './mosaic.js';
 import { planSubstructure } from './substructure.js';
-import { buildElements, countParts, overlayPath, overlayLabelPoints } from './pieces.js';
+import { buildElements, countParts, overlayPath, overlayLabelPoints, overlayMask } from './pieces.js';
+import { OVERLAY_COVERED, overlaySize } from './parts.js';
 import { planRisers, countRisers, MAX_LEVEL } from './layers.js';
 
 export function textColorFor(hex) {
@@ -30,8 +31,8 @@ function previewSvg(project, { cell = 6, sectionLines = true, highlight = -1 } =
     s += `<rect x="${x * cell}" y="${y * cell}" width="${cell}" height="${cell}" fill="${LEGO_COLORS[grid[y * cols + x]].hex}"/>`;
   }
   if (project.overlay && cell >= 4) {
-    for (let i = 0; i < cols * rows; i++) if (project.overlay[i]) {
-      s += `<path d="${overlayPath(project.overlay[i])}" transform="translate(${(i % cols) * cell} ${((i / cols) | 0) * cell}) scale(${cell})" fill="${LEGO_COLORS[project.overlayColor[i]].hex}"/>`;
+    for (let i = 0; i < cols * rows; i++) if (project.overlay[i] && project.overlay[i] !== OVERLAY_COVERED) {
+      s += `<path d="${overlayPath(project.overlay[i])}" transform="translate(${(i % cols) * cell} ${((i / cols) | 0) * cell}) scale(${cell * overlaySize(project.overlay[i])})" fill="${LEGO_COLORS[project.overlayColor[i]].hex}"/>`;
     }
   }
   if (sectionLines) {
@@ -58,11 +59,29 @@ function elementSvg(e, ox, oy, cell, legend, baseColorOf) {
       + label(x + cell / 2, y + cell / 2, 4.6, txt, sym); // im ersten Feld: liegt nie auf einer 4er-Linie
   }
   if (e.kind === 'overlay') {
-    const base = baseColorOf(e), pts = overlayLabelPoints(e.code);
-    return `<path d="${overlayPath(e.code)}" transform="translate(${x} ${y}) scale(${cell})" fill="${c.hex}" stroke="#000" stroke-width="${0.45 / cell}"/>`
-      + label(x + pts.top[0] * cell, y + pts.top[1] * cell, 3.6, txt, sym)
-      + label(x + pts.base[0] * cell, y + pts.base[1] * cell, 2.6, textColorFor(LEGO_COLORS[base].hex), legend.symbol.get(base));
+    const F = cell * e.w, pts = overlayLabelPoints(e.code);
+    let s = `<path d="${overlayPath(e.code)}" transform="translate(${x} ${y}) scale(${F})" fill="${c.hex}" stroke="#000" stroke-width="${0.45 / F}"/>`
+      + label(x + pts.top[0] * F, y + pts.top[1] * F, e.w > 1 ? 5.2 : 3.6, txt, sym);
+    if (e.w === 1) {
+      const base = baseColorOf(e);
+      return s + label(x + pts.base[0] * cell, y + pts.base[1] * cell, 2.6, textColorFor(LEGO_COLORS[base].hex), legend.symbol.get(base));
+    }
+    // 2×2: jede Platte darunter kann eine eigene Farbe haben – Nummer in ihre freie Ecke
+    const Q = 8, m = overlayMask(e.code, Q), T = Q * e.w;
+    for (let cy = 0; cy < e.w; cy++) for (let cx = 0; cx < e.w; cx++) {
+      let n = 0, sx = 0, sy = 0;
+      for (let qy = 0; qy < Q; qy++) for (let qx = 0; qx < Q; qx++) {
+        const X = cx * Q + qx, Y = cy * Q + qy;
+        if (m[Y * T + X] < 0.5) { n++; sx += X + 0.5; sy += Y + 0.5; }
+      }
+      if (n < Q * Q * 0.12) continue;
+      const base = baseColorOf(e, cx, cy);
+      s += label(x + (sx / n / Q) * cell, y + (sy / n / Q) * cell, 2.6, textColorFor(LEGO_COLORS[base].hex), legend.symbol.get(base));
+    }
+    return s;
   }
+  // Platte unter einem Formteil: nur Farbfläche, die Nummer steht klein beim Formteil
+  if (e.under) return `<rect x="${x + 0.4}" y="${y + 0.4}" width="${cell - 0.8}" height="${cell - 0.8}" fill="${c.hex}" stroke="#555" stroke-width="0.3"/>`;
   const round = e.part.shape.startsWith('round'), stud = !e.part.shape.endsWith('flat');
   let s = round
     ? `<circle cx="${x + cell / 2}" cy="${y + cell / 2}" r="${cell * 0.46}" fill="${c.hex}" stroke="#555" stroke-width="0.3"/>`
@@ -81,7 +100,7 @@ function sectionSvg(project, sx, sy, legend, elements) {
   for (let i = 0; i < w; i++) s += `<text x="${pad + i * cell + cell / 2}" y="${pad - 3}" font-size="4.5" text-anchor="middle" font-family="sans-serif" fill="#555">${i + 1}</text>`;
   for (let j = 0; j < h; j++) s += `<text x="${pad - 3}" y="${pad + j * cell + cell / 2}" font-size="4.5" text-anchor="end" dominant-baseline="central" font-family="sans-serif" fill="#555">${j + 1}</text>`;
   s += `<rect x="${pad}" y="${pad}" width="${w * cell}" height="${h * cell}" fill="#fafafa"/>`;
-  const baseColorOf = e => grid[e.y * cols + e.x];
+  const baseColorOf = (e, dx = 0, dy = 0) => grid[(e.y + dy) * cols + e.x + dx];
   for (const e of elements) s += elementSvg(e, pad - x0 * cell, pad - y0 * cell, cell, legend, baseColorOf);
   if (project.height) s += reliefMarks(project, x0, y0, w, h, cell, pad);
   // Hilfslinien alle 4 Noppen
@@ -123,11 +142,12 @@ function reliefMarks(project, x0, y0, w, h, cell, pad) {
 
 /** Kleines Symbol je Teil für die Teile-Legende. */
 function partIcon(e) {
-  const cell = 10, w = e.kind === 'long' ? e.w * cell : cell;
-  const demo = { ...e, x: 0, y: 0, h: 1, colorIndex: e.colorIndex };
+  const cell = 10, w = e.kind === 'long' ? e.w * cell : e.kind === 'overlay' ? e.w * cell : cell;
+  const demo = { ...e, x: 0, y: 0, h: e.kind === 'overlay' ? e.w : 1, colorIndex: e.colorIndex, under: false };
   const legend = { symbol: new Map([[e.colorIndex, '']]) };
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${cell}" class="part-icon" style="width:${w / 10 * 1.4}em">`
-    + (e.kind === 'overlay' ? `<rect width="${cell}" height="${cell}" fill="#bbb"/>` : '')
+  const h = e.kind === 'overlay' ? w : cell;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" class="part-icon" style="width:${w / 10 * 1.4}em">`
+    + (e.kind === 'overlay' ? `<rect width="${w}" height="${h}" fill="#bbb"/>` : '')
     + elementSvg(demo, 0, 0, cell, legend, () => e.colorIndex) + '</svg>';
 }
 
@@ -207,7 +227,7 @@ export function buildInstructionsHtml(project, title = 'Mein LEGO-Mosaik') {
   const partCounts = new Map();
   for (const e of elements) partCounts.set(e.part.blId, (partCounts.get(e.part.blId) || 0) + 1);
   const gray = LEGO_COLORS.findIndex(c => c.legoId === 194);
-  const partLegend = [...kinds.values()].map(e => `<li>${partIcon({ ...e, colorIndex: gray >= 0 ? gray : 0, w: e.kind === 'long' ? Math.max(e.w, e.h) : 1 })} <span>${esc(e.part.label)}</span> <small>BL ${esc(e.part.blId)} · ${partCounts.get(e.part.blId)}×</small></li>`).join('');
+  const partLegend = [...kinds.values()].map(e => `<li>${partIcon({ ...e, colorIndex: gray >= 0 ? gray : 0, w: e.kind === 'long' ? Math.max(e.w, e.h) : e.kind === 'overlay' ? e.w : 1 })} <span>${esc(e.part.label)}</span> <small>BL ${esc(e.part.blId)} · ${partCounts.get(e.part.blId)}×</small></li>`).join('');
 
   let html = `<section class="page cover">
     <h1>${esc(title)}</h1>
@@ -225,7 +245,7 @@ export function buildInstructionsHtml(project, title = 'Mein LEGO-Mosaik') {
       <li><strong>Unterbau, Lage 2:</strong> Setze die ${sub.top.length} Platten der oberen Lage darauf und drücke sie gut fest. Die Fugen der beiden Lagen liegen versetzt, so hält der Unterbau als eine Fläche zusammen.</li>
       ${levels ? `<li><strong>Ebenen:</strong> Setze die Sockelplatten nach den Plänen „Ebene +1“${levels > 1 ? ` bis „Ebene +${levels}“` : ''} auf den Unterbau, jede Ebene auf die vorige. In den Abschnitten sind erhöhte Bereiche violett umrandet; das Schild <strong>+1</strong>, <strong>+2</strong> … sagt, auf welcher Ebene die Steine dort sitzen.</li>` : ''}
       <li><strong>Mosaik:</strong> Baue die ${nsx * nsy} Abschnitte (je ${SEC}×${SEC} Noppen) nacheinander auf den Unterbau. Nummer 1 ist oben links, es geht zeilenweise nach rechts. Jedes Feld zeigt die Farbnummer aus der Legende und die Form des Teils: Kreis = rund, Quadrat = eckig, Ring = mit Noppe, ohne Ring = glatte Fliese. Längliche Felder sind 1×2- bis 1×4-Fliesen. Spalten stehen oben, Zeilen links, dicke Linien teilen das Raster in 4×4-Blöcke.</li>
-      ${overlays ? `<li><strong>Halbe Noppen (${overlays}×):</strong> Felder mit Viertel- oder Halbkreis bekommen zuerst eine eckige Platte 1×1 in der Farbe der kleinen Zahl, darauf die Fliese in der Farbe der großen Zahl, genau so gedreht wie gezeichnet. Diese Teile stehen eine Plattenhöhe über den anderen.</li>` : ''}
+      ${overlays ? `<li><strong>Formteile (${overlays}×):</strong> Felder mit Viertelkreis, Halbkreis oder Dreieck bekommen zuerst eckige Platten 1×1 in der Farbe der kleinen Zahl (bei 2×2-Teilen vier Platten, jede mit ihrer Zahl), darauf das Formteil in der Farbe der großen Zahl, genau so gedreht wie gezeichnet. Diese Teile stehen eine Plattenhöhe über den anderen.</li>` : ''}
     </ol>
   </section>`;
 

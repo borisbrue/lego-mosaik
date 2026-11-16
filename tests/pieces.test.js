@@ -167,7 +167,7 @@ test('Anleitung zeigt halbe Noppen und Teile-Legende', () => {
   const overlay = new Uint8Array(n), overlayColor = new Uint8Array(n);
   overlay[17] = overlayCode(0, 1); overlayColor[17] = BLACK;
   const html = buildInstructionsHtml({ cols, rows, grid, shapes: new Uint8Array(n), overlay, overlayColor, part: 'plate-round' });
-  assert.ok(html.includes('Halbe Noppen (1×)'));
+  assert.ok(html.includes('Formteile (1×)'));
   assert.ok(html.includes('Fliese 1×1 Viertelkreis'));
   assert.ok(html.includes('class="part-legend"'));
 });
