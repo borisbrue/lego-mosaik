@@ -17,9 +17,10 @@
     <div class="brand"><img src="icons/icon.svg" alt="" width="32" height="32"><span>Mosaik-Studio</span></div>
     <nav class="tabs" role="tablist">
       <button role="tab" data-tab="design" aria-selected="true">1 · Entwurf</button>
-      <button role="tab" data-tab="edit">2 · Bearbeiten</button>
-      <button role="tab" data-tab="order">3 · Bestellliste</button>
-      <button role="tab" data-tab="guide">4 · Anleitung</button>
+      <button role="tab" data-tab="paint">2 · Malen</button>
+      <button role="tab" data-tab="edit">3 · Bearbeiten</button>
+      <button role="tab" data-tab="order">4 · Bestellliste</button>
+      <button role="tab" data-tab="guide">5 · Anleitung</button>
     </nav>
     <div class="header-actions">
       <button id="btn-install" class="btn small" hidden>App installieren</button>
@@ -171,6 +172,65 @@
     </section>
 
     <!-- BEARBEITEN -->
+    <section id="tab-paint" class="tab-panel" role="tabpanel" hidden>
+      <div class="toolbar">
+        <div class="tool-group" role="group" aria-label="Form hinzufügen">
+          <button class="btn" data-add="rect" title="Rechteck hinzufügen">▭ Rechteck</button>
+          <button class="btn" data-add="ellipse" title="Kreis hinzufügen">● Kreis</button>
+          <button class="btn" data-add="triangle" title="Dreieck hinzufügen">▲ Dreieck</button>
+          <button class="btn" data-add="rtriangle" title="Rechtwinkliges Dreieck hinzufügen">◣ Rechtwinklig</button>
+          <button class="btn" data-add="half" title="Halbkreis hinzufügen">◠ Halbkreis</button>
+        </div>
+        <div class="tool-group">
+          <button id="paint-undo" class="btn" title="Rückgängig (Strg+Z)">↶</button>
+          <button id="paint-redo" class="btn" title="Wiederholen (Strg+Y)">↷</button>
+          <button id="paint-zoom-out" class="btn" title="Verkleinern">−</button>
+          <button id="paint-zoom-in" class="btn" title="Vergrößern">+</button>
+          <label class="check" title="Größen auf ganze Noppen, Kreise und Kanten genau aufs Noppenraster, Drehen in 15°-Schritten"><input id="paint-snap" type="checkbox" checked> Am Raster ausrichten</label>
+        </div>
+        <div class="tool-group" id="paint-sel-tools">
+          <span class="swatch" id="paint-swatch"></span>
+          <select id="paint-color" aria-label="Farbe der Form"></select>
+          <select id="paint-level" aria-label="Ebene der Form">
+            <option value="">Ebene wie Mosaik</option>
+            <option value="0">Ebene 0 (flach)</option>
+            <option value="1">Ebene +1</option>
+            <option value="2">Ebene +2</option>
+            <option value="3">Ebene +3</option>
+          </select>
+          <select id="paint-surface" aria-label="Oberfläche der Form">
+            <option value="">Oberfläche wie Mosaik</option>
+            <option value="plate-round">Platte rund</option>
+            <option value="tile-round">Fliese rund</option>
+            <option value="plate">Platte eckig</option>
+            <option value="tile">Fliese eckig (glatt)</option>
+          </select>
+          <label class="mini">B <input id="paint-w" type="number" min="0.5" step="1" aria-label="Breite in Noppen"></label>
+          <label class="mini">H <input id="paint-h" type="number" min="0.5" step="1" aria-label="Höhe in Noppen"></label>
+          <label class="mini">⟳ <input id="paint-rot" type="number" step="15" aria-label="Drehung in Grad">°</label>
+          <button id="paint-dup" class="btn" title="Duplizieren (Strg+D)">⧉</button>
+          <button id="paint-group" class="btn" title="Gruppieren (Strg+G)">Gruppieren</button>
+          <button id="paint-ungroup" class="btn" title="Gruppe auflösen (Strg+Umschalt+G)">Lösen</button>
+          <button id="paint-front" class="btn" title="Nach vorne">⤒</button>
+          <button id="paint-back" class="btn" title="Nach hinten">⤓</button>
+          <button id="paint-del" class="btn danger" title="Löschen (Entf)">🗑</button>
+        </div>
+      </div>
+      <div class="edit-layout">
+        <div id="paint-viewport" class="editor-viewport paint-viewport">
+          <div class="empty" id="paint-lock" hidden><p>Du hast im Bearbeiten-Tab Steine von Hand gesetzt. Der Entwurf ist gesperrt – entsperre ihn im Entwurf, um weiter zu malen.</p></div>
+          <canvas id="paint-canvas"></canvas>
+        </div>
+        <aside class="edit-palette">
+          <h3>Malen mit Formen</h3>
+          <p class="hint">Formen liegen über dem Mosaik und bleiben beweglich: anklicken, ziehen, an den Ecken skalieren, am runden Griff drehen. Umschalt+Klick wählt mehrere, „Gruppieren“ fasst sie zusammen. Die Steine passen sich bei jeder Änderung an – mit Viertel-, Halbkreisen und 2×2-Dreiecken, wo sie die Form treffen.</p>
+          <p class="hint">Tipp: Mit „Am Raster ausrichten“ werden Kreise zu echten LEGO-Kreisen und 45°-Kanten zu sauberen Dreiecken.</p>
+          <label class="field"><span>Grundfläche ohne Foto</span><select id="paint-bg"></select></label>
+          <p class="hint" id="paint-count"></p>
+        </aside>
+      </div>
+    </section>
+
     <section id="tab-edit" class="tab-panel" role="tabpanel" hidden>
       <div class="toolbar">
         <div class="tool-group" role="group" aria-label="Werkzeug">

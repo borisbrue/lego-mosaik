@@ -3,6 +3,8 @@ import { STUD_PARTS, STUD_MM, SECTION, PAPER_FORMATS, paperStuds, SHAPE_KEYS, SH
 import { autoShapes, computeOverlays, fitBigPieces, simplify, buildElements, overlayPath } from './pieces.js';
 import { cutout, cellsFromCutout, cutoutRgb, graphicSub } from './cutout.js';
 import { snapObjects } from './shapes.js';
+import { applyDrawing } from './drawing.js';
+import { Painter, colorOptions } from './paint.js';
 import { autoDepth, planRisers } from './layers.js';
 import { segment, regionAt, regionAnchor, regionGroup, applyRegionOps } from './regions.js';
 import { planSubstructure } from './substructure.js';
@@ -53,6 +55,8 @@ function defaultProject() {
     overlay: null,       // Uint8Array: halbe Noppe je Zelle (0 = keine, siehe overlayCode)
     overlayColor: null,  // Uint8Array: Farbindex der halben Noppe
     height: null,        // Uint8Array: Ebene je Zelle (0 = flach … 3)
+    drawing: [],         // Malmodus: Formen über dem Mosaik [{id, kind, cx, cy, w, h, rot, colorId, level, group}]
+    paintBgId: 1,        // Grundfläche zum Malen ohne Foto (LEGO-Farb-ID)
   };
 }
 
@@ -64,6 +68,7 @@ let sampledKey = '';
 let segmentation = null;   // Bereiche des aktuellen Entwurfs (nicht gespeichert)
 let chosenColors = null;   // Farbindizes nach „Anzahl Farben“
 let selectedRegion = null; // {x, y} normiert
+let baseLayer = null;      // Mosaik ohne gemalte Formen (Foto/Grafik oder leere Grundfläche), nicht gespeichert
 
 // ---------- Hilfsfunktionen ----------
 function toast(msg) {
@@ -120,6 +125,7 @@ function deserialize(data) {
   p.shapes = Array.isArray(data.shapes) && data.shapes.length === n ? Uint8Array.from(data.shapes) : null;
   p.overlay = Array.isArray(data.overlay) && data.overlay.length === n ? Uint8Array.from(data.overlay) : null;
   p.height = Array.isArray(data.height) && data.height.length === n ? Uint8Array.from(data.height) : null;
+  p.drawing = Array.isArray(data.drawing) ? data.drawing : [];
   return ensureLayers(p);
 }
 const save = debounce(() => kvSet('project', serialize()).catch(console.error), 400);
@@ -246,9 +252,31 @@ function enabledIndices() {
   return project.enabled.map(id => indexByLegoId.get(id)).filter(i => i !== undefined);
 }
 
+/** Leere Grundfläche zum Malen ohne Foto. */
+function blankBase() {
+  const n = project.cols * project.rows, bg = indexByLegoId.get(project.paintBgId) ?? 0;
+  return {
+    cols: project.cols, rows: project.rows, grid: new Uint8Array(n).fill(bg), shapes: new Uint8Array(n).fill(SHAPE_INDEX[project.part] ?? 0),
+    overlay: new Uint8Array(n), overlayColor: new Uint8Array(n), height: new Uint8Array(n),
+  };
+}
+
+/** Gemalte Formen über die Grundebene legen → Projektraster. */
+function composeDrawing() {
+  if (!baseLayer || baseLayer.cols !== project.cols || baseLayer.rows !== project.rows) return;
+  const out = applyDrawing(baseLayer, project.drawing, { shapeIndex: SHAPE_INDEX[project.part] ?? 0 });
+  Object.assign(project, { grid: out.grid, shapes: out.shapes, overlay: out.overlay, overlayColor: out.overlayColor, height: out.height });
+}
+
 function regenerate() {
   drawCrop();
-  if (!image || project.edited) { updateDesignView(); return; }
+  if (project.edited) { updateDesignView(); return; }
+  if (!image) {
+    // ohne Foto: Malen auf einer einfarbigen Grundfläche
+    if (project.drawing.length || currentTab === 'paint') { baseLayer = blankBase(); composeDrawing(); save(); }
+    updateDesignView();
+    return;
+  }
   let idx = enabledIndices();
   if (!idx.length) { toast('Mindestens eine Farbe aktivieren.'); return; }
   const { cols, rows } = project;
@@ -306,7 +334,8 @@ function regenerate() {
   for (let i = 0; i < overlay.length; i++) if (overlay[i]) shapes[i] = SHAPE_PLATE;
   const height = autoDepth(grid, cols, rows, project.depth, px);
   for (let i = 0; i < height.length; i++) if (levels[i] >= 0) height[i] = levels[i];
-  Object.assign(project, { grid, shapes, overlay, overlayColor, height });
+  baseLayer = { cols, rows, grid, shapes, overlay, overlayColor, height };
+  composeDrawing();
   renderPaletteChips();
   updateDesignView();
   save();
@@ -828,13 +857,116 @@ function printTab(tab) {
   window.print();
 }
 
+// ---------- Malen ----------
+let painter;
+let paintColorId = 21; // Farbe für neue Formen
+const debouncedSave = debounce(() => save(), 300);
+function initPaint() {
+  painter = new Painter({
+    canvas: $('#paint-canvas'), viewport: $('#paint-viewport'),
+    getProject: () => project,
+    onChange: final => {
+      composeDrawing();
+      painter.redraw(final);
+      if (final) { debouncedSave(); updatePaintUI(); }
+    },
+    onSelect: () => updatePaintUI(),
+  });
+  $('#paint-color').innerHTML = colorOptions(paintColorId);
+  $('#paint-bg').innerHTML = colorOptions(project.paintBgId);
+  $$('[data-add]').forEach(b => b.addEventListener('click', () => { ensurePaintBase(); painter.add(b.dataset.add, paintColorId); }));
+  $('#paint-color').addEventListener('change', e => { paintColorId = +e.target.value; painter.set('colorId', paintColorId); updatePaintUI(); });
+  $('#paint-level').addEventListener('change', e => painter.set('level', e.target.value === '' ? null : +e.target.value));
+  $('#paint-surface').addEventListener('change', e => painter.set('surface', e.target.value || null));
+  for (const k of ['w', 'h', 'rot']) {
+    $(`#paint-${k}`).addEventListener('change', e => {
+      const v = +e.target.value;
+      if (Number.isFinite(v)) painter.set(k, k === 'rot' ? v : Math.max(0.5, v));
+    });
+  }
+  $('#paint-dup').addEventListener('click', () => painter.duplicate());
+  $('#paint-group').addEventListener('click', () => painter.group());
+  $('#paint-ungroup').addEventListener('click', () => painter.ungroup());
+  $('#paint-front').addEventListener('click', () => painter.order(1));
+  $('#paint-back').addEventListener('click', () => painter.order(-1));
+  $('#paint-del').addEventListener('click', () => painter.remove());
+  $('#paint-undo').addEventListener('click', () => painter.undo());
+  $('#paint-redo').addEventListener('click', () => painter.redo());
+  $('#paint-zoom-in').addEventListener('click', () => { painter.zoom = Math.min(4, painter.zoom * 1.25); painter.redraw(); });
+  $('#paint-zoom-out').addEventListener('click', () => { painter.zoom = Math.max(0.5, painter.zoom / 1.25); painter.redraw(); });
+  $('#paint-snap').addEventListener('change', e => { painter.snap = e.target.checked; });
+  $('#paint-bg').addEventListener('change', e => { project.paintBgId = +e.target.value; if (!image) regenerate(); painter.redraw(); });
+  window.addEventListener('resize', debounce(() => { if (currentTab === 'paint') painter.redraw(); }, 150));
+  window.addEventListener('keydown', e => {
+    if (currentTab !== 'paint' || project.edited || /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return;
+    const mod = e.ctrlKey || e.metaKey, k = e.key.toLowerCase(), step = e.shiftKey ? 4 : 1;
+    if (mod && k === 'z' && !e.shiftKey) { e.preventDefault(); painter.undo(); }
+    else if (mod && (k === 'y' || (k === 'z' && e.shiftKey))) { e.preventDefault(); painter.redo(); }
+    else if (mod && k === 'd') { e.preventDefault(); painter.duplicate(); }
+    else if (mod && k === 'g') { e.preventDefault(); if (e.shiftKey) painter.ungroup(); else painter.group(); }
+    else if (mod && k === 'a') { e.preventDefault(); painter.selectAll(); }
+    else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); painter.remove(); }
+    else if (e.key === 'Escape') { painter.selection.clear(); painter.redraw(); updatePaintUI(); }
+    else if (e.key.startsWith('Arrow') && painter.selection.size) {
+      e.preventDefault();
+      const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
+      const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
+      painter.nudge(dx, dy);
+    }
+  });
+}
+
+/** Grundebene sicherstellen (sie wird nicht gespeichert und nach dem Laden neu berechnet). */
+function ensurePaintBase() {
+  if (project.edited) return;
+  if (!baseLayer || baseLayer.cols !== project.cols || baseLayer.rows !== project.rows) {
+    if (image) regenerate();
+    else { baseLayer = blankBase(); composeDrawing(); }
+  }
+}
+
+function showPaint() {
+  $('#paint-lock').hidden = !project.edited;
+  $('#paint-canvas').hidden = project.edited;
+  $('#tab-paint .toolbar').classList.toggle('off', project.edited);
+  if (project.edited) return;
+  ensurePaintBase();
+  $('#paint-bg').value = project.paintBgId;
+  painter.redraw();
+  updatePaintUI();
+}
+
+function updatePaintUI() {
+  const sel = painter.selected(), one = sel[0];
+  $('#paint-sel-tools').classList.toggle('off', !sel.length);
+  if (one) {
+    paintColorId = one.colorId;
+    $('#paint-color').value = one.colorId;
+    $('#paint-level').value = one.level ?? '';
+    $('#paint-surface').value = one.surface ?? '';
+    $('#paint-w').value = +one.w.toFixed(2);
+    $('#paint-h').value = +one.h.toFixed(2);
+    $('#paint-rot').value = Math.round(one.rot);
+  }
+  $('#paint-swatch').style.background = LEGO_COLORS[indexByLegoId.get(paintColorId) ?? 0].hex;
+  $('#paint-group').disabled = sel.length < 2;
+  $('#paint-ungroup').disabled = !sel.some(s => s.group);
+  $('#paint-undo').disabled = !painter.undoStack.length;
+  $('#paint-redo').disabled = !painter.redoStack.length;
+  const n = project.drawing.length;
+  $('#paint-count').textContent = n
+    ? `${n} ${n === 1 ? 'Form' : 'Formen'}${sel.length ? ` · ${sel.length} ausgewählt` : ''}`
+    : 'Noch keine Formen – oben eine hinzufügen.';
+}
+
 // ---------- Tabs ----------
 let currentTab = 'design';
 function showTab(tab) {
   currentTab = tab;
   $$('.tabs button').forEach(b => b.setAttribute('aria-selected', b.dataset.tab === tab));
   $$('.tab-panel').forEach(p => { p.hidden = p.id !== `tab-${tab}`; });
-  if (tab === 'edit') {
+  if (tab === 'paint') showPaint();
+  else if (tab === 'edit') {
     $('#edit-empty').hidden = !!project.grid;
     $('#editor-canvas').hidden = !project.grid;
     if (project.grid) { editor.setProject(project); renderUsedColors(); selectColor(editor.color); }
@@ -866,17 +998,17 @@ function initMenu() {
         image = await loadImageFromBlob(imageBlob);
         await kvSet('image', imageBlob);
       } else { image = null; imageBlob = null; await kvDel('image'); }
-      sampled = null;
+      sampled = null; baseLayer = null; painter.selection.clear();
       editor.setProject(null, { resetHistory: true });
       syncControls(); save(); showTab('design');
-      if (!project.grid) regenerate();
+      if (!project.grid || (project.drawing.length && !project.edited)) regenerate();
       toast('Projekt geladen');
     } catch { toast('Datei ist kein gültiges Mosaik-Projekt.'); }
     $('.menu').open = false;
   });
   $('#btn-new').addEventListener('click', async () => {
     if (!confirm('Aktuelles Projekt verwerfen und neu beginnen?')) return;
-    project = defaultProject(); image = null; imageBlob = null; sampled = null;
+    project = defaultProject(); image = null; imageBlob = null; sampled = null; baseLayer = null; painter.selection.clear();
     await kvDel('image'); await kvDel('project');
     editor.setProject(null, { resetHistory: true });
     syncControls(); showTab('design');
@@ -899,7 +1031,7 @@ function initPwa() {
 
 // ---------- Start ----------
 async function init() {
-  initDesign(); initRegions(); initEditor(); initOrder(); initMenu(); initPwa();
+  initDesign(); initRegions(); initEditor(); initPaint(); initOrder(); initMenu(); initPwa();
   $$('.tabs button').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
   try {
     const saved = await kvGet('project');
@@ -908,8 +1040,9 @@ async function init() {
     if (blob) { imageBlob = blob; image = await loadImageFromBlob(blob); }
   } catch (e) { console.warn('Laden fehlgeschlagen', e); }
   syncControls();
-  if (image && !project.grid) regenerate(); else drawCrop();
+  // Grundebene für gemalte Formen neu berechnen (wird nicht gespeichert)
+  if ((image && !project.grid) || (project.drawing.length && !project.edited)) regenerate(); else drawCrop();
   const tab = location.hash.slice(1);
-  showTab(['design', 'edit', 'order', 'guide'].includes(tab) ? tab : 'design');
+  showTab(['design', 'paint', 'edit', 'order', 'guide'].includes(tab) ? tab : 'design');
 }
 init();

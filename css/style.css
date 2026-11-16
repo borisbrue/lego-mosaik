@@ -209,3 +209,11 @@ tr.group th { text-align: left; padding-top: .9rem; font-size: .85rem; text-tran
 .region-actions { display: flex; flex-wrap: wrap; align-items: end; gap: .5rem; background: #fff8d6; border-radius: 8px; padding: .5rem; }
 .region-info { font-weight: 600; align-self: center; }
 #btn-region-hide[aria-pressed="true"] { background: #333; color: #fff; }
+
+/* Malmodus */
+.paint-viewport { display: flex; align-items: flex-start; justify-content: center; padding: 12px; }
+.paint-viewport canvas { cursor: default; box-shadow: 0 2px 10px rgba(0,0,0,.4); }
+.toolbar .mini { display: inline-flex; align-items: center; gap: .2rem; font-size: .85rem; }
+.toolbar .mini input { width: 4.2rem; }
+#paint-sel-tools.off { opacity: .45; pointer-events: none; }
+.toolbar.off { opacity: .45; pointer-events: none; }

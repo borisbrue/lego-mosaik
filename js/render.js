@@ -65,7 +65,7 @@ export function drawLong(ctx, x, y, w, h, s, hex) {
   else ctx.fillRect(x + s * 0.12, y + s * 0.12, s * 0.12, h * s - s * 0.6);
 }
 
-const shapeOf = (p, i) => STUD_PARTS[SHAPE_KEYS[p.shapes ? p.shapes[i] : SHAPE_INDEX[p.part] ?? 0]].shape;
+export const shapeOf = (p, i) => STUD_PARTS[SHAPE_KEYS[p.shapes ? p.shapes[i] : SHAPE_INDEX[p.part] ?? 0]].shape;
 
 /** Eine Zelle ohne Zusammenfassen zu langen Fliesen (schnell, für den Editor). */
 export function drawCellOf(ctx, p, i, cell) {

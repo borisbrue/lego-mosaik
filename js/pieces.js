@@ -188,7 +188,7 @@ export function autoShapes(grid, cols, rows, { area = 'plate-round', edge = 'til
  * @param strength 0..100 (0 = aus)
  * @returns {{overlay: Uint8Array, overlayColor: Uint8Array, count: number}}
  */
-export function computeOverlays(subRgb, grid, cols, rows, S, strength, blocked = null, { keep: keepMax = null } = {}) {
+export function computeOverlays(subRgb, grid, cols, rows, S, strength, blocked = null, { keep: keepMax = null, allowTop = null } = {}) {
   const n = cols * rows;
   const overlay = new Uint8Array(n), overlayColor = new Uint8Array(n);
   if (strength <= 0) return { overlay, overlayColor, count: 0 };
@@ -200,7 +200,7 @@ export function computeOverlays(subRgb, grid, cols, rows, S, strength, blocked =
   const minGain = 150 - 120 * t;   // Mindestgewinn je Teilpixel (ΔE², 150 ≈ ΔE 12 … 30 ≈ ΔE 5,5)
   const minSpread = 200 - 120 * t; // Mindest-Streuung in der Zelle (ΔE², ≈ ΔE 14 … 9)
   const masks = SMALL_CODES.map(c => [c, overlayMask(c, S)]);
-  const sub = new Array(SS);
+  const sub = new Array(SS), labCache = new Map();
   let count = 0;
   const src = Uint8Array.from(grid);
   for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
@@ -208,7 +208,10 @@ export function computeOverlays(subRgb, grid, cols, rows, S, strength, blocked =
     if (blocked && blocked[i]) continue;
     for (let sy = 0; sy < S; sy++) for (let sx = 0; sx < S; sx++) {
       const o = ((y * S + sy) * W + x * S + sx) * 3;
-      sub[sy * S + sx] = rgbToLab(subRgb[o], subRgb[o + 1], subRgb[o + 2]);
+      const key = (Math.round(subRgb[o]) << 16) | (Math.round(subRgb[o + 1]) << 8) | Math.round(subRgb[o + 2]);
+      let l = labCache.get(key);
+      if (!l) { l = rgbToLab(subRgb[o], subRgb[o + 1], subRgb[o + 2]); labCache.set(key, l); }
+      sub[sy * S + sx] = l;
     }
     const LA = lab[A];
     let e1 = 0;
@@ -231,6 +234,8 @@ export function computeOverlays(subRgb, grid, cols, rows, S, strength, blocked =
       const LB = lab[B];
       if (dist2(LA, LB) < MIN_CONTRAST2) continue;
       for (const [base, top, Lb, Lt] of [[A, B, LA, LB], [B, A, LB, LA]]) {
+        // allowTop: Formteil muss diese Farbe haben (Malmodus: Wölbung gehört zur Form)
+        if (allowTop && allowTop[i] !== 255 && top !== allowTop[i]) continue;
         for (const [code, m] of masks) {
           let e = 0;
           for (let s = 0; s < SS && e < bestE; s++) {
@@ -258,7 +263,7 @@ export function computeOverlays(subRgb, grid, cols, rows, S, strength, blocked =
  * @param strength 0..100 (0 = aus)
  * @param blocked optional Uint8Array: Zellen, die frei bleiben müssen
  */
-export function fitBigPieces(subRgb, grid, cols, rows, S, strength, blocked = null) {
+export function fitBigPieces(subRgb, grid, cols, rows, S, strength, blocked = null, { allowTop = null, keep = null, keepByKind = null } = {}) {
   const n = cols * rows, overlay = new Uint8Array(n), overlayColor = new Uint8Array(n);
   if (strength <= 0) return { overlay, overlayColor, count: 0 };
   const lab = colorLab(), W = cols * S, T2 = 2 * S, A = T2 * T2;
@@ -273,21 +278,38 @@ export function fitBigPieces(subRgb, grid, cols, rows, S, strength, blocked = nu
     return [c, m, cnt, cnt.indexOf(Math.max(...cnt))];
   });
   const outErr = new Float64Array(4 * 64);
-  // Lab je Teilpixel einmal vorab (gleiche RGB-Werte teilen sich das Ergebnis)
-  const labAll = new Float32Array(subRgb.length), labCache = new Map();
-  for (let o = 0; o < subRgb.length; o += 3) {
+  // Lab je Teilpixel bei Bedarf (gleiche RGB-Werte teilen sich das Ergebnis); gesperrte Bereiche
+  // werden so gar nicht erst umgerechnet
+  const labAll = new Float32Array(subRgb.length), labDone = new Uint8Array(subRgb.length / 3), labCache = new Map();
+  const labAt = o => {
+    if (labDone[o / 3]) return;
     const key = (Math.round(subRgb[o]) << 16) | (Math.round(subRgb[o + 1]) << 8) | Math.round(subRgb[o + 2]);
     let l = labCache.get(key);
     if (!l) { l = rgbToLab(subRgb[o], subRgb[o + 1], subRgb[o + 2]); labCache.set(key, l); }
-    labAll[o] = l[0]; labAll[o + 1] = l[1]; labAll[o + 2] = l[2];
-  }
+    labAll[o] = l[0]; labAll[o + 1] = l[1]; labAll[o + 2] = l[2]; labDone[o / 3] = 1;
+  };
   const cands = [];
   const sec = v => Math.floor(v / SECTION);
+  // Noppe „rein“: alle Teilpixel haben genau die Farbe des Steins – vier reine Noppen gewinnen nichts
+  const pure = new Int8Array(n).fill(-1), rgbOf = LEGO_COLORS.map(c => hexToRgb(c.hex));
+  const isPure = i => {
+    if (pure[i] < 0) {
+      const x = i % cols, y = (i / cols) | 0, c = rgbOf[grid[i]];
+      let ok = 1;
+      for (let sy = 0; sy < S && ok; sy++) for (let sx = 0; sx < S; sx++) {
+        const o = ((y * S + sy) * W + x * S + sx) * 3;
+        if (Math.abs(subRgb[o] - c[0]) > 0.5 || Math.abs(subRgb[o + 1] - c[1]) > 0.5 || Math.abs(subRgb[o + 2] - c[2]) > 0.5) { ok = 0; break; }
+      }
+      pure[i] = ok;
+    }
+    return pure[i] === 1;
+  };
   const px = new Array(A);
   for (let y = 0; y + 1 < rows; y++) for (let x = 0; x + 1 < cols; x++) {
     if (sec(x) !== sec(x + 1) || sec(y) !== sec(y + 1)) continue;
     const cells = [y * cols + x, y * cols + x + 1, (y + 1) * cols + x, (y + 1) * cols + x + 1];
     if (blocked && cells.some(c => blocked[c])) continue;
+    if (cells.every(isPure)) continue;
     // Farbkandidaten: 4×4-Umgebung
     const colors = new Set();
     for (let dy = -1; dy <= 2; dy++) for (let dx = -1; dx <= 2; dx++) {
@@ -295,7 +317,7 @@ export function fitBigPieces(subRgb, grid, cols, rows, S, strength, blocked = nu
       if (nx >= 0 && ny >= 0 && nx < cols && ny < rows) colors.add(grid[ny * cols + nx]);
     }
     if (colors.size < 2) continue;
-    for (let sy = 0; sy < T2; sy++) for (let sx = 0; sx < T2; sx++) px[sy * T2 + sx] = ((y * S + sy) * W + x * S + sx) * 3;
+    for (let sy = 0; sy < T2; sy++) for (let sx = 0; sx < T2; sx++) { const o = ((y * S + sy) * W + x * S + sx) * 3; px[sy * T2 + sx] = o; labAt(o); }
     const cl = [...colors];
     // d[c][s] = Abstand Teilpixel s zu Farbe c
     const d = cl.map(c => {
@@ -322,9 +344,13 @@ export function fitBigPieces(subRgb, grid, cols, rows, S, strength, blocked = nu
       for (let ti = 0; ti < K; ti++) {
         // Kontrast zur Grundfarbe der Ecke, die am meisten frei bleibt
         if (dist2(lab[cl[ti]], lab[bases[k0]]) < MIN_CONTRAST2) continue;
+        if (allowTop && !cells.some(c => allowTop[c] === cl[ti])) continue;
         let e = baseErr;
         const dt = d[ti];
         for (let s = 0; s < A; s++) if (m[s] >= 0.5) e += dt[s];
+        // Toleranz je Formteil-Art: Teil nur, wenn es die Kontur fast genau trifft
+        const lim = keepByKind ? keepByKind[overlayKind(code)] : keep;
+        if (lim != null && e > plain * lim) continue;
         if (!best || e < best.err) best = { code, top: cl[ti], bases, err: e };
       }
     }
